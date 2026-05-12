@@ -1,12 +1,22 @@
 {
   "name": "vshot",
   "description": "Watch videos with AI. Extract frames and create montage grids so Claude can analyze video content.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": {
     "name": "ClaudeCodeCafe"
   },
   "license": "MIT",
-  "keywords": ["video", "montage", "frames", "analysis", "ffmpeg"],
-  "skills": ["./skills/video-analysis"],
-  "commands": ["./commands"]
+  "keywords": [
+    "video",
+    "montage",
+    "frames",
+    "analysis",
+    "ffmpeg"
+  ],
+  "skills": [
+    "./skills/video-analysis"
+  ],
+  "commands": [
+    "./commands"
+  ]
 }
