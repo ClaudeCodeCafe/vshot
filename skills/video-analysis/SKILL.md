@@ -39,5 +39,5 @@ Then use the `Read` tool on the montage image.
 ## Important
 
 - Always use `--cleanup` to remove individual frames after montage creation
-- If vshot or ffmpeg is not available, tell the user to run `/vshot:setup`
+- If vshot, ffmpeg, ffprobe, or montage is not available, tell the user to run `/vshot:setup`
 - Don't try to analyze video without vshot — you cannot read video files directly

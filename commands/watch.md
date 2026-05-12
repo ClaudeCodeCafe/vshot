@@ -17,13 +17,10 @@ Extract frames from a video file and analyze the content visually.
 2. Check dependencies:
 
 ```bash
-command -v ffmpeg && command -v montage
+command -v ffmpeg && command -v ffprobe && command -v montage
 ```
 
-If either is missing, tell the user:
-```
-Missing dependencies. Install with: brew install ffmpeg imagemagick
-```
+If any is missing, tell the user to run `/vshot:setup` to check and install dependencies.
 And stop.
 
 3. Run vshot to create a montage:
