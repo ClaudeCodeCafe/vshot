@@ -565,6 +565,6 @@ echo "   📁 Total: ${TOTAL_SIZE} → ${OUTPUT_DIR}/"
 if $MONTAGE; then
   MONTAGE_PATH="$(cd -- "$OUTPUT_DIR" && pwd)/${BASENAME}_montage_${RUN_ID}.jpg"
   echo ""
-  echo "   💡 AI に読ませる:"
+  echo "   💡 Feed to AI:"
   echo "   Read(\"${MONTAGE_PATH}\")"
 fi

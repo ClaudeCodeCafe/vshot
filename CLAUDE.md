@@ -1,45 +1,46 @@
 # CLAUDE.md — vshot
 
 Video frame extraction CLI + Claude Code plugin.
-MP4 → モンタージュグリッド1枚で AI に動画を「見せる」。
+One montage grid image lets AI "watch" videos.
 
-## 構成
+## Structure
 
 ```
 vshot/
-├── .claude-plugin/plugin.json   # プラグインマニフェスト
-├── vshot                        # CLI ツール本体
+├── .claude-plugin/plugin.json   # Plugin manifest
+├── vshot                        # CLI tool (single bash script)
 ├── commands/
-│   ├── watch.md                 # /watch コマンド
-│   └── setup.md                 # /vshot:setup コマンド
+│   ├── watch.md                 # /watch command
+│   └── setup.md                 # /vshot:setup command
 ├── skills/
-│   └── video-analysis.md        # 動画分析スキル
+│   └── video-analysis.md        # Auto-trigger video analysis skill
 └── CLAUDE.md
 ```
 
-## CLI 使い方
+## CLI Usage
 
 ```bash
-vshot video.mp4                        # 20フレーム抽出
-vshot video.mp4 --montage              # 1枚のグリッド画像に
-vshot video.mp4 --mode text --montage  # 文字が読めるサイズで
+vshot video.mp4                        # Extract 20 frames
+vshot video.mp4 --montage              # Combine into single grid image
+vshot video.mp4 --mode text --montage  # Text-readable resolution
+vshot video.mp4 --scene --montage      # Scene-change frames only
 ```
 
-## プラグイン使い方
+## Plugin Usage
 
 ```
-/watch video.mp4              # 動画を分析
-/watch video.mp4 --mode text  # テキスト読み取りモード
-/vshot:setup                  # 依存チェック
+/watch video.mp4              # Analyze video
+/watch video.mp4 --mode text  # Text-readable mode
+/vshot:setup                  # Check dependencies
 ```
 
-## 技術スタック
+## Tech Stack
 
-- Bash スクリプト（macOS bash 3 互換）
-- 依存: ffmpeg, ImageMagick
+- Bash script (macOS bash 3 compatible)
+- Dependencies: ffmpeg, ImageMagick
 
-## ルール
+## Rules
 
-- シンプルを維持。コア機能は1ファイル
-- ffmpeg と ImageMagick 以外の依存を増やさない
-- コミットメッセージに `Co-Authored-By: Claude` 含めない
+- Keep it simple. Core functionality in a single file
+- No dependencies beyond ffmpeg and ImageMagick
+- Include `Co-Authored-By: Claude` in commit messages (ClaudeCodeCafe org)
