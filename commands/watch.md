@@ -35,7 +35,7 @@ And stop.
 4. Find the generated montage file:
 
 ```bash
-ls -t "${VIDEO_PATH%.*}_vshot/"*_montage.jpg | head -1
+ls -t "${VIDEO_PATH%.*}_vshot/"*_montage_*.jpg | head -1
 ```
 
 5. Use the `Read` tool to read the montage image.

@@ -22,7 +22,7 @@ When you encounter a video file path (.mp4, .mov, .webm, .avi) and the user want
 
 ```bash
 # Find the montage
-ls -t "<video-path-without-extension>_vshot/"*_montage.jpg | head -1
+ls -t "<video-path-without-extension>_vshot/"*_montage_*.jpg | head -1
 ```
 
 Then use the `Read` tool on the montage image.

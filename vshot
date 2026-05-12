@@ -284,8 +284,12 @@ fi
 # ── Burn timestamps (#15: count and warn on failures) ─────────────────────
 if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
   echo -n "   Adding timestamps..."
-  # Use awk instead of bc (#8)
-  STEP=$(echo "$DURATION $EXTRACTED" | awk '{printf "%.2f", $1 / $2}')
+  # Use interval directly when set, otherwise calculate step from duration (#8)
+  if [ -n "$INTERVAL" ]; then
+    STEP="$INTERVAL"
+  else
+    STEP=$(echo "$DURATION $EXTRACTED" | awk '{printf "%.2f", $1 / $2}')
+  fi
   i=0
   TS_FAILURES=0
   for frame in "${OUTPUT_DIR}"/${FRAME_PREFIX}_*.jpg; do
