@@ -46,13 +46,16 @@ Aspect ratio is auto-detected. Portrait (9:16) and landscape (16:9) videos are h
 
 ## Install
 
-### Prerequisites
+### Option A: Homebrew (Recommended)
 
 ```bash
-brew install ffmpeg imagemagick
+brew tap ClaudeCodeCafe/tap
+brew install vshot
 ```
 
-### Option A: Claude Code Plugin (Recommended)
+Installs vshot with ffmpeg and ImageMagick as dependencies. Done.
+
+### Option B: Claude Code Plugin
 
 ```bash
 /plugin marketplace add ClaudeCodeCafe/vshot
@@ -67,9 +70,12 @@ Then use directly:
 /vshot:setup
 ```
 
-### Option B: CLI Only
+### Option C: Manual
 
 ```bash
+# Prerequisites
+brew install ffmpeg imagemagick
+
 # Clone and link
 git clone https://github.com/ClaudeCodeCafe/vshot.git
 ln -s "$(pwd)/vshot/vshot" /usr/local/bin/vshot
