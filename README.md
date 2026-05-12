@@ -1,5 +1,7 @@
 # vshot
 
+[![CI](https://github.com/ClaudeCodeCafe/vshot/actions/workflows/ci.yml/badge.svg)](https://github.com/ClaudeCodeCafe/vshot/actions/workflows/ci.yml)
+
 **Video frame extraction for AI.** One montage image. One `Read()` call. Your AI can now watch videos.
 
 <p align="center">
