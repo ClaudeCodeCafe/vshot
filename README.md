@@ -7,7 +7,7 @@
 <p align="center">
   <img src="docs/montage-example.jpg" alt="vshot montage example" width="720">
   <br>
-  <em>12 frames from a 62-second video → 1 image, 140KB. Portrait auto-detected.</em>
+  <em>12 frames from a 62-second video → 6×2 grid, 140KB. Portrait auto-detected.</em>
 </p>
 
 ## The Problem
