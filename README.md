@@ -7,7 +7,7 @@
 <p align="center">
   <img src="docs/montage-example.jpg" alt="vshot montage example" width="720">
   <br>
-  <em>5 scene-change frames from a 62-second video → 1 image, 76KB. --scene auto-detected key moments.</em>
+  <em>12 frames from a 62-second video → 1 image, 140KB. Portrait auto-detected.</em>
 </p>
 
 ## The Problem
@@ -125,6 +125,27 @@ vshot video.mp4 --scene 0.5 --montage
 | `--output DIR` | Custom output directory | `<video>_vshot/` |
 | `--cleanup` | Remove frames after montage | off |
 | `--no-timestamps` | Skip timestamp overlay | — |
+
+## Scene Detection
+
+`--scene` uses ffmpeg's scene change detection to extract only the frames that matter — skipping duplicates and static content.
+
+<table>
+<tr>
+<th>vshot video.mp4 --montage (uniform)</th>
+<th>vshot video.mp4 --scene --montage (smart)</th>
+</tr>
+<tr>
+<td><img src="docs/montage-example.jpg" width="360"></td>
+<td><img src="docs/montage-scene.jpg" width="360"></td>
+</tr>
+<tr>
+<td>12 frames, 140KB — includes duplicates</td>
+<td>5 frames, 76KB — only key moments</td>
+</tr>
+</table>
+
+Same video. Fewer frames. Zero redundancy.
 
 ## Token Efficiency
 
