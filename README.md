@@ -5,7 +5,7 @@
 <p align="center">
   <img src="docs/montage-example.jpg" alt="vshot montage example" width="720">
   <br>
-  <em>16 frames from a 3-minute video → 1 image, 648KB</em>
+  <em>12 frames from a 68-second video → 1 image, 156KB. Portrait auto-detected.</em>
 </p>
 
 ## The Problem
@@ -24,15 +24,15 @@
 ```
 MP4 → ffmpeg extracts frames → timestamps burned in → ImageMagick tiles into grid → 1 image
 
-┌──────┬──────┬──────┬──────┬──────┐
-│ 0:00 │ 0:11 │ 0:22 │ 0:33 │ 0:44 │
-├──────┼──────┼──────┼──────┼──────┤
-│ 0:55 │ 1:06 │ 1:17 │ 1:28 │ 1:39 │
-├──────┼──────┼──────┼──────┼──────┤
-│ 1:50 │ 2:01 │ 2:12 │ 2:23 │ 2:34 │
-└──────┴──────┴──────┴──────┴──────┘
-           → montage.jpg (one image!)
+┌────┬────┬────┬────┬────┬────┐
+│0:00│0:05│0:11│0:17│0:22│0:28│
+├────┼────┼────┼────┼────┼────┤
+│0:34│0:39│0:45│0:51│0:56│1:02│
+└────┴────┴────┴────┴────┴────┘
+        → montage.jpg (one image!)
 ```
+
+Aspect ratio is auto-detected. Portrait (9:16) and landscape (16:9) videos are handled correctly — no stretching.
 
 ## Modes
 
@@ -113,11 +113,13 @@ vshot video.mp4 --montage --cleanup
 
 ## Token Efficiency
 
-| Approach | Images to read | ~Tokens | Effort |
-|----------|---------------|---------|--------|
-| Manual screenshots | 5-10 | 5,000-10,000 | High |
-| Frame dump | 20 | 20,000+ | Medium |
-| **vshot montage** | **1** | **~1,500** | **One command** |
+| Approach | Images to read | ~Tokens | File size |
+|----------|---------------|---------|-----------|
+| Manual screenshots | 5-10 | 5,000-10,000 | 5-10 MB |
+| Frame dump | 20 | 20,000+ | 2+ MB |
+| **vshot montage** | **1** | **~1,500** | **~156 KB** |
+
+One montage. ~97% fewer tokens. Zero effort.
 
 ## Dependencies
 
