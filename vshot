@@ -154,7 +154,7 @@ while [ $# -gt 0 ]; do
       OUTPUT_DIR="$2"; shift 2 ;;
     --scene)
       # --scene can optionally take a threshold value (0.0-1.0)
-      if [ $# -ge 2 ] && echo "$2" | grep -qE '^0?\.[0-9]+$|^1(\.0+)?$'; then
+      if [ $# -ge 2 ] && echo "$2" | grep -qE '^(0|0?\.[0-9]+|1(\.0+)?)$'; then
         SCENE="$2"; shift 2
       else
         SCENE="0.3"; shift
@@ -272,7 +272,9 @@ SCENE_MODE=false
 if [ -n "$SCENE" ]; then
   # Scene detection: extract only frames where visual change exceeds threshold
   SCENE_MODE=true
-  VF_FILTER="select='gt(scene,${SCENE})',scale=${W_OUT}:${H_OUT}"
+  # showinfo captures PTS for accurate timestamps on scene-detected frames
+  SCENE_PTS_LOG="${TMPDIR:-/tmp}/vshot_scene_pts_${RUN_ID}.log"
+  VF_FILTER="select='gt(scene,${SCENE})',showinfo,scale=${W_OUT}:${H_OUT}"
   FRAMES="?"
 elif [ -n "$INTERVAL" ]; then
   FPS_FILTER="fps=1/${INTERVAL}"
@@ -317,17 +319,39 @@ echo -n "   Extracting frames..."
 # (#3) Capture stderr, check exit code
 # Scene mode needs -vsync vfr and yuvj420p for JPEG compatibility
 EXTRA_OPTS=""
+FFMPEG_LOGLEVEL="error"
 if $SCENE_MODE; then
   EXTRA_OPTS="-vsync vfr -pix_fmt yuvj420p"
+  # Use info level to capture showinfo PTS data for accurate timestamps
+  FFMPEG_LOGLEVEL="info"
 fi
+FFMPEG_EXIT=0
 # shellcheck disable=SC2086
-if ! ffmpeg -v error -i "$VIDEO" \
+ffmpeg -v "$FFMPEG_LOGLEVEL" -i "$VIDEO" \
   -vf "${VF_FILTER}" \
   $EXTRA_OPTS \
   -q:v $(( (100 - Q) * 31 / 100 + 1 )) \
   "${OUTPUT_DIR}/${FRAME_PREFIX}_%04d.jpg" \
-  2>"$STDERR_TMP"; then
-  if ! $SCENE_MODE; then
+  2>"$STDERR_TMP" || FFMPEG_EXIT=$?
+
+# Extract PTS values from showinfo output for scene mode timestamps
+if $SCENE_MODE && [ -s "$STDERR_TMP" ]; then
+  grep 'pts_time:' "$STDERR_TMP" | sed 's/.*pts_time:\([0-9.]*\).*/\1/' > "$SCENE_PTS_LOG" 2>/dev/null || true
+fi
+
+# (#4) Use find for frame counting (bash 3 compatible)
+EXTRACTED=$(find "$OUTPUT_DIR" -name "${FRAME_PREFIX}_*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
+
+if [ "$FFMPEG_EXIT" -ne 0 ]; then
+  if $SCENE_MODE && [ "$EXTRACTED" -eq 0 ]; then
+    # Scene mode: ffmpeg exits non-zero when 0 frames match — that's expected
+    echo " done (0 frames)"
+    echo ""
+    echo "   ⚠️  No scene changes detected at threshold=${SCENE}. Try a lower value (e.g. --scene 0.2)."
+    TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" 2>/dev/null | cut -f1 | tr -d ' ')
+    echo "   📁 Total: ${TOTAL_SIZE:-0B} → ${OUTPUT_DIR}/"
+    exit 2
+  else
     echo " FAILED" >&2
     echo "Error: ffmpeg frame extraction failed" >&2
     if [ -s "$STDERR_TMP" ]; then
@@ -335,19 +359,17 @@ if ! ffmpeg -v error -i "$VIDEO" \
     fi
     exit 1
   fi
-  # Scene mode: ffmpeg may exit non-zero when 0 frames match — that's OK
 fi
 
-# (#4) Use find for frame counting (bash 3 compatible)
-EXTRACTED=$(find "$OUTPUT_DIR" -name "${FRAME_PREFIX}_*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
 echo " done (${EXTRACTED} frames)"
 
 if [ "$EXTRACTED" -eq 0 ]; then
   if $SCENE_MODE; then
     echo ""
     echo "   ⚠️  No scene changes detected at threshold=${SCENE}. Try a lower value (e.g. --scene 0.2)."
-    echo "   📁 Total: 0B → ${OUTPUT_DIR}/"
-    exit 0
+    TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" 2>/dev/null | cut -f1 | tr -d ' ')
+    echo "   📁 Total: ${TOTAL_SIZE:-0B} → ${OUTPUT_DIR}/"
+    exit 2
   fi
   echo "Error: no frames were extracted" >&2
   exit 1
@@ -358,20 +380,36 @@ if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
   echo -n "   Adding timestamps..."
   detect_font
   # Build fontfile option for drawtext if a font was detected
+  # Escape colons and backslashes in font path for ffmpeg filter syntax (#6)
   DRAWTEXT_FONT=""
   if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
-    DRAWTEXT_FONT=":fontfile='${DETECTED_FONT}'"
+    ESCAPED_FONT=$(echo "$DETECTED_FONT" | sed "s/\\\\/\\\\\\\\\\\\\\\\/g; s/:/\\\\\\\\:/g; s/'/\\\\\\\\'/g")
+    DRAWTEXT_FONT=":fontfile='${ESCAPED_FONT}'"
   fi
-  # Use interval directly when set, otherwise calculate step from duration (#8)
-  if [ -n "$INTERVAL" ]; then
-    STEP="$INTERVAL"
+
+  # Build PTS lookup for scene mode (accurate timestamps from showinfo)
+  # For other modes, calculate evenly-spaced step
+  if $SCENE_MODE && [ -s "$SCENE_PTS_LOG" ]; then
+    USE_PTS=true
   else
-    STEP=$(echo "$DURATION $EXTRACTED" | awk '{printf "%.2f", $1 / $2}')
+    USE_PTS=false
+    if [ -n "$INTERVAL" ]; then
+      STEP="$INTERVAL"
+    else
+      STEP=$(echo "$DURATION $EXTRACTED" | awk '{printf "%.2f", $1 / $2}')
+    fi
   fi
+
   i=0
   TS_FAILURES=0
   for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
-    SECS=$(echo "$i $STEP" | awk '{printf "%d", $1 * $2}')
+    if $USE_PTS; then
+      # Read actual PTS from showinfo log (1-indexed line for 0-indexed i)
+      SECS=$(awk "NR==$((i + 1)){printf \"%d\", \$1}" "$SCENE_PTS_LOG")
+      [ -z "$SECS" ] && SECS=0
+    else
+      SECS=$(echo "$i $STEP" | awk '{printf "%d", $1 * $2}')
+    fi
     MINS=$((SECS / 60))
     REMAINING=$((SECS % 60))
     TS=$(printf "%d:%02d" "$MINS" "$REMAINING")
@@ -387,11 +425,17 @@ if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
 
     i=$((i + 1))
   done
-  if [ "$TS_FAILURES" -gt 0 ]; then
-    echo " done (${TS_FAILURES} timestamp burn-in(s) failed)"
+  if [ "$TS_FAILURES" -eq "$EXTRACTED" ]; then
+    echo " FAILED (all ${TS_FAILURES} frames)" >&2
+    echo "   ⚠️  All timestamp burn-ins failed. Frames are saved without timestamps." >&2
+    echo "   Hint: install fonts or use --no-timestamps to suppress this warning." >&2
+  elif [ "$TS_FAILURES" -gt 0 ]; then
+    echo " done (${TS_FAILURES}/${EXTRACTED} timestamp burn-in(s) failed)"
   else
     echo " done"
   fi
+  # Clean up PTS log if used
+  rm -f -- "${SCENE_PTS_LOG:-/dev/null}" 2>/dev/null || true
 fi
 
 # ── Create montage (#5: proper error handling) ────────────────────────────
@@ -463,7 +507,7 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     exit 1
   fi
 
-  MONTAGE_SIZE=$(du -h -- "$MONTAGE_FILE" | cut -f1 | tr -d ' ')
+  MONTAGE_SIZE=$(du -h "$MONTAGE_FILE" | cut -f1 | tr -d ' ')
   echo " done"
   echo ""
   echo "   📊 Montage: ${BASENAME}_montage_${RUN_ID}.jpg (${TILE} grid, ${MONTAGE_SIZE})"
@@ -478,7 +522,7 @@ else
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
-TOTAL_SIZE=$(du -sh -- "$OUTPUT_DIR" | cut -f1 | tr -d ' ')
+TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" | cut -f1 | tr -d ' ')
 echo "   📁 Total: ${TOTAL_SIZE} → ${OUTPUT_DIR}/"
 
 if $MONTAGE; then
