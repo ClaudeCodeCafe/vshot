@@ -94,6 +94,7 @@ VIDEO=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage ;;
+    -v|--version) echo "${SCRIPT_NAME} v${VERSION}"; exit 0 ;;
     --frames)
       if [ $# -lt 2 ]; then
         echo "Error: --frames requires a value" >&2; exit 1
@@ -334,8 +335,21 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   TILE="${COLS}x${ROWS}"
   MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
 
+  # Detect a usable font for montage (Homebrew ImageMagick often lacks default font config)
+  MONTAGE_FONT=""
+  if ! montage -list font 2>/dev/null | grep -q "Font:"; then
+    MONTAGE_FONT=$(fc-match -f '%{file}' 2>/dev/null || true)
+  fi
+
   # (#5) Run montage directly, check exit code, verify output
-  if ! montage "${OUTPUT_DIR}"/${FRAME_PREFIX}_*.jpg \
+  run_montage() {
+    if [ -n "$MONTAGE_FONT" ] && [ -f "$MONTAGE_FONT" ]; then
+      montage -font "$MONTAGE_FONT" "$@"
+    else
+      montage "$@"
+    fi
+  }
+  if ! run_montage "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg \
     -tile "$TILE" \
     -geometry "${W_OUT}x${H_OUT}+4+4" \
     -background '#0e0e1a' \
