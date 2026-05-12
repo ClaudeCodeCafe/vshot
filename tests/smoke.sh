@@ -60,7 +60,7 @@ assert_nonempty() {
   local name="$1"
   local filepath="$2"
   if [ -s "$filepath" ]; then
-    echo "  ✅ $name ($(du -h -- "$filepath" | cut -f1 | tr -d ' '))"
+    echo "  ✅ $name ($(du -h "$filepath" | cut -f1 | tr -d ' '))"
     PASS=$((PASS + 1))
   else
     echo "  ❌ $name (empty or missing)"
@@ -156,17 +156,20 @@ assert "scene + montage + cleanup" "$VSHOT" "$SCENE_VIDEO" --scene --montage --c
 assert_count "scene cleanup: montage exists" "$SCENE_CLEANUP_DIR" "*_montage_*.jpg" 1
 assert_count "scene cleanup: frames removed" "$SCENE_CLEANUP_DIR" "vshot_*_frame_*.jpg" 0
 
-# --scene 0 should be accepted (#3, #9)
+# --scene 0, 0.0, .0 should all be accepted (#3, #9)
 assert "scene threshold 0" "$VSHOT" "$SCENE_VIDEO" --scene 0 --output "${TMPDIR_TEST}/scene_zero"
+assert "scene threshold 0.0" "$VSHOT" "$SCENE_VIDEO" --scene 0.0 --output "${TMPDIR_TEST}/scene_zero2"
+assert "scene threshold .0" "$VSHOT" "$SCENE_VIDEO" --scene .0 --output "${TMPDIR_TEST}/scene_zero3"
 
 # --scene 1.0 — very high threshold, likely 0 frames (exit 2) (#4, #9)
 "$VSHOT" "$SCENE_VIDEO" --scene 1.0 --output "${TMPDIR_TEST}/scene_max" >/dev/null 2>&1
 SCENE_MAX_EXIT=$?
-if [ "$SCENE_MAX_EXIT" -eq 2 ] || [ "$SCENE_MAX_EXIT" -eq 0 ]; then
-  echo "  ✅ scene threshold 1.0 (exit ${SCENE_MAX_EXIT})"
+SCENE_MAX_FRAMES=$(find "${TMPDIR_TEST}/scene_max" -maxdepth 1 -name "vshot_*_frame_*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
+if [ "$SCENE_MAX_EXIT" -eq 2 ] && [ "$SCENE_MAX_FRAMES" -eq 0 ]; then
+  echo "  ✅ scene threshold 1.0 (exit 2, 0 frames as expected)"
   PASS=$((PASS + 1))
 else
-  echo "  ❌ scene threshold 1.0 (unexpected exit ${SCENE_MAX_EXIT})"
+  echo "  ❌ scene threshold 1.0 (exit ${SCENE_MAX_EXIT}, ${SCENE_MAX_FRAMES} frames — expected exit 2, 0 frames)"
   FAIL=$((FAIL + 1))
 fi
 
@@ -185,15 +188,23 @@ echo ""
 echo "── Cleanup isolation (#7) ──"
 # Run twice into same dir, verify cleanup only removes current run's frames
 ISOLATION_DIR="${TMPDIR_TEST}/isolation"
-"$VSHOT" "$VIDEO" --frames 2 --output "$ISOLATION_DIR" >/dev/null 2>&1
-FIRST_RUN_COUNT=$(find "$ISOLATION_DIR" -maxdepth 1 -name "vshot_*_frame_*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
-"$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --output "$ISOLATION_DIR" >/dev/null 2>&1
-AFTER_CLEANUP_COUNT=$(find "$ISOLATION_DIR" -maxdepth 1 -name "vshot_*_frame_*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
-if [ "$AFTER_CLEANUP_COUNT" -eq "$FIRST_RUN_COUNT" ]; then
-  echo "  ✅ cleanup preserves other run's frames (${FIRST_RUN_COUNT} retained)"
-  PASS=$((PASS + 1))
+if "$VSHOT" "$VIDEO" --frames 2 --output "$ISOLATION_DIR" >/dev/null 2>&1; then
+  FIRST_RUN_COUNT=$(find "$ISOLATION_DIR" -maxdepth 1 -name "vshot_*_frame_*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$FIRST_RUN_COUNT" -ge 1 ] && "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --output "$ISOLATION_DIR" >/dev/null 2>&1; then
+    AFTER_CLEANUP_COUNT=$(find "$ISOLATION_DIR" -maxdepth 1 -name "vshot_*_frame_*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$AFTER_CLEANUP_COUNT" -eq "$FIRST_RUN_COUNT" ]; then
+      echo "  ✅ cleanup preserves other run's frames (${FIRST_RUN_COUNT} retained)"
+      PASS=$((PASS + 1))
+    else
+      echo "  ❌ cleanup removed other run's frames (expected ${FIRST_RUN_COUNT}, got ${AFTER_CLEANUP_COUNT})"
+      FAIL=$((FAIL + 1))
+    fi
+  else
+    echo "  ❌ cleanup isolation: second vshot run failed"
+    FAIL=$((FAIL + 1))
+  fi
 else
-  echo "  ❌ cleanup removed other run's frames (expected ${FIRST_RUN_COUNT}, got ${AFTER_CLEANUP_COUNT})"
+  echo "  ❌ cleanup isolation: first vshot run failed"
   FAIL=$((FAIL + 1))
 fi
 

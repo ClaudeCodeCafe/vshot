@@ -202,7 +202,7 @@ check_deps
 # ── Temp file for capturing stderr (#3) ───────────────────────────────────
 STDERR_TMP=$(mktemp "${TMPDIR:-/tmp}/vshot_stderr.XXXXXX")
 cleanup_tmp() {
-  rm -f -- "$STDERR_TMP"
+  rm -f -- "$STDERR_TMP" "${SCENE_PTS_LOG:-}" 2>/dev/null || true
 }
 trap cleanup_tmp EXIT
 
@@ -226,8 +226,15 @@ if [ -z "$DURATION_INT" ] || [ "$DURATION_INT" -eq 0 ] 2>/dev/null; then
 fi
 
 # Detect original video dimensions (#3, #9, #10: -- before path)
-V_WIDTH=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 -- "$VIDEO" 2>"$STDERR_TMP" | head -1 | tr -d ',[:space:]')
-V_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 -- "$VIDEO" 2>"$STDERR_TMP" | head -1 | tr -d ',[:space:]')
+if ! V_WIDTH=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 -- "$VIDEO" 2>"$STDERR_TMP"); then
+  V_WIDTH=""
+fi
+V_WIDTH=$(echo "$V_WIDTH" | head -1 | tr -d ',[:space:]')
+
+if ! V_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 -- "$VIDEO" 2>"$STDERR_TMP"); then
+  V_HEIGHT=""
+fi
+V_HEIGHT=$(echo "$V_HEIGHT" | head -1 | tr -d ',[:space:]')
 
 # Validate dimensions (#9)
 if [ -z "$V_WIDTH" ] || [ -z "$V_HEIGHT" ]; then
@@ -273,7 +280,7 @@ if [ -n "$SCENE" ]; then
   # Scene detection: extract only frames where visual change exceeds threshold
   SCENE_MODE=true
   # showinfo captures PTS for accurate timestamps on scene-detected frames
-  SCENE_PTS_LOG="${TMPDIR:-/tmp}/vshot_scene_pts_${RUN_ID}.log"
+  SCENE_PTS_LOG=$(mktemp "${TMPDIR:-/tmp}/vshot_pts.XXXXXX")
   VF_FILTER="select='gt(scene,${SCENE})',showinfo,scale=${W_OUT}:${H_OUT}"
   FRAMES="?"
 elif [ -n "$INTERVAL" ]; then
@@ -344,7 +351,22 @@ EXTRACTED=$(find "$OUTPUT_DIR" -name "${FRAME_PREFIX}_*.jpg" -type f 2>/dev/null
 
 if [ "$FFMPEG_EXIT" -ne 0 ]; then
   if $SCENE_MODE && [ "$EXTRACTED" -eq 0 ]; then
-    # Scene mode: ffmpeg exits non-zero when 0 frames match — that's expected
+    # Scene mode: distinguish "no frames matched" from real errors
+    # Check if stderr contains actual error messages (beyond showinfo output)
+    HAS_REAL_ERROR=false
+    if [ -s "$STDERR_TMP" ]; then
+      # Filter out showinfo lines — anything remaining is a real error
+      if grep -v -E '^\[Parsed_showinfo|pts:|fmt:|config:|n:' "$STDERR_TMP" | grep -qi 'error\|denied\|invalid\|failed\|cannot' 2>/dev/null; then
+        HAS_REAL_ERROR=true
+      fi
+    fi
+    if $HAS_REAL_ERROR; then
+      echo " FAILED" >&2
+      echo "Error: ffmpeg frame extraction failed" >&2
+      grep -v -E '^\[Parsed_showinfo' "$STDERR_TMP" >&2
+      exit 1
+    fi
+    # Genuine 0-scene result
     echo " done (0 frames)"
     echo ""
     echo "   ⚠️  No scene changes detected at threshold=${SCENE}. Try a lower value (e.g. --scene 0.2)."
@@ -434,8 +456,6 @@ if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
   else
     echo " done"
   fi
-  # Clean up PTS log if used
-  rm -f -- "${SCENE_PTS_LOG:-/dev/null}" 2>/dev/null || true
 fi
 
 # ── Create montage (#5: proper error handling) ────────────────────────────
