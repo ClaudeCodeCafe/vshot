@@ -5,7 +5,7 @@ set -eo pipefail
 # Extract frames from video and optionally create a montage grid image.
 # Designed to let AI assistants "watch" videos via image analysis.
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 SCRIPT_NAME="vshot"
 
 # Unique prefix per run to avoid stale frame collisions (#1)
