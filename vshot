@@ -295,8 +295,8 @@ if [ -n "$SCENE" ]; then
 elif [ -n "$INTERVAL" ]; then
   FPS_FILTER="fps=1/${INTERVAL}"
   VF_FILTER="${FPS_FILTER},scale=${W_OUT}:${H_OUT}"
-  # Estimate frame count: fps=1/N starts at 0s, so count = floor(duration/interval) + 1
-  FRAMES=$(echo "$DURATION_INT $INTERVAL" | awk '{d=int($1/$2)+1; if(d<1) d=1; print d}')
+  # Don't estimate — actual count depends on ffmpeg's fps filter timing
+  FRAMES="?"
 else
   # (#12) Warn if FRAMES was capped
   if [ "$FRAMES" -gt "$DURATION_INT" ]; then
@@ -313,9 +313,11 @@ BASENAME=$(basename -- "$VIDEO" | sed 's/\.[^.]*$//')
 if [ -z "$OUTPUT_DIR" ]; then
   OUTPUT_DIR="$(dirname -- "$VIDEO")/${BASENAME}_vshot"
 fi
-# Normalize OUTPUT_DIR to prevent dash-prefixed paths breaking commands
+# Normalize relative OUTPUT_DIR to prevent special chars breaking find/ffmpeg
+# Prefix with ./ unless already absolute or relative (./  ../)
 case "$OUTPUT_DIR" in
-  -*) OUTPUT_DIR="./$OUTPUT_DIR" ;;
+  /*|./*|../*) ;; # already safe
+  *) OUTPUT_DIR="./$OUTPUT_DIR" ;;
 esac
 mkdir -p -- "$OUTPUT_DIR"
 
@@ -328,6 +330,8 @@ echo "   Video:    $(basename "$VIDEO") (${DURATION_INT}s, ${V_WIDTH}x${V_HEIGHT
 echo "   Mode:     $MODE (${W_OUT}x${H_OUT})"
 if $SCENE_MODE; then
   echo "   Scene:    threshold=${SCENE} (auto frame count)"
+elif [ -n "$INTERVAL" ]; then
+  echo "   Interval: every ${INTERVAL}s"
 else
   echo "   Frames:   $FRAMES"
 fi
