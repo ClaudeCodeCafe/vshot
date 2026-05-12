@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update version in all files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # vshot script
+          sed -i "s/^VERSION=\".*\"/VERSION=\"${VERSION}\"/" vshot
+
+          # plugin.json
+          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > tmp.json && mv tmp.json .claude-plugin/plugin.json
+
+          # marketplace.json (metadata.version + plugins[0].version)
+          jq --arg v "$VERSION" '.metadata.version = $v | .plugins[0].version = $v' .claude-plugin/marketplace.json > tmp.json && mv tmp.json .claude-plugin/marketplace.json
+
+      - name: Commit version bump
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vshot .claude-plugin/plugin.json .claude-plugin/marketplace.json
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "chore: bump version to ${VERSION} [skip ci]"
+          git push origin main
+
+      - name: Move tag to version-bumped commit
+        run: |
+          git tag -f "$GITHUB_REF_NAME"
+          git push origin "$GITHUB_REF_NAME" --force
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "vshot v${VERSION}" \
+            --generate-notes \
+            --latest
