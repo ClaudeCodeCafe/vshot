@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Watch videos with AI. Extract frames into a single montage grid image.",
-    "version": "0.2.0"
+    "version": "0.2.1"
   },
   "plugins": [
     {
       "name": "vshot",
       "source": "./",
       "description": "Extract video frames and create montage grids for AI video analysis. Includes /watch command and auto-detection skill.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "ClaudeCodeCafe"
       },
