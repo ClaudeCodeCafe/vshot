@@ -1,0 +1,30 @@
+{
+  "name": "vshot",
+  "id": "vshot",
+  "owner": {
+    "name": "ClaudeCodeCafe"
+  },
+  "metadata": {
+    "description": "Watch videos with AI. Extract frames into a single montage grid image.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "vshot",
+      "source": "./",
+      "description": "Extract video frames and create montage grids for AI video analysis. Includes /watch command and auto-detection skill.",
+      "version": "0.1.0",
+      "author": {
+        "name": "ClaudeCodeCafe"
+      },
+      "keywords": [
+        "video",
+        "montage",
+        "frames",
+        "analysis",
+        "ffmpeg"
+      ],
+      "category": "tools"
+    }
+  ]
+}

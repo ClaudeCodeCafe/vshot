@@ -1,0 +1,254 @@
+#!/bin/bash
+set -eo pipefail
+
+# ── vshot — Video frame extraction for AI consumption ──────────────────────
+# Extract frames from video and optionally create a montage grid image.
+# Designed to let AI assistants "watch" videos via image analysis.
+
+VERSION="0.1.0"
+SCRIPT_NAME="vshot"
+
+# ── Defaults ───────────────────────────────────────────────────────────────
+MODE="overview"
+FRAMES=20
+INTERVAL=""
+MONTAGE=false
+OUTPUT_DIR=""
+TIMESTAMPS=true
+CLEANUP=false
+
+# ── Usage ──────────────────────────────────────────────────────────────────
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} v${VERSION} — Video frame extraction for AI consumption
+
+USAGE:
+  ${SCRIPT_NAME} <video> [options]
+
+OPTIONS:
+  --frames N        Number of frames to extract (default: 20)
+  --interval N      Extract every N seconds (overrides --frames)
+  --mode MODE       overview | text | detail (default: overview)
+  --montage         Combine all frames into a single grid image
+  --output DIR      Output directory (default: <video>_vshot/)
+  --no-timestamps   Don't burn timestamps into montage
+  --cleanup         Remove individual frames after creating montage
+  -h, --help        Show this help
+
+MODES:
+  overview   480x270   Low-res color. Quick overview of video flow.
+  text       960x540   Mid-res. Optimized for reading text/UI content.
+  detail     1280x720  High-res. Full detail for design review.
+
+EXAMPLES:
+  ${SCRIPT_NAME} video.mp4                          # 20 frames, overview
+  ${SCRIPT_NAME} video.mp4 --montage                # single grid image
+  ${SCRIPT_NAME} video.mp4 --mode text --montage    # text-readable grid
+  ${SCRIPT_NAME} video.mp4 --interval 5 --montage   # every 5s, grid
+  ${SCRIPT_NAME} video.mp4 --frames 30 --mode detail # 30 high-res frames
+EOF
+  exit 0
+}
+
+# ── Mode resolution lookup ─────────────────────────────────────────────────
+get_mode_settings() {
+  case "$MODE" in
+    overview) W=480;  H=270; Q=70 ;;
+    text)     W=960;  H=540; Q=85 ;;
+    detail)   W=1280; H=720; Q=90 ;;
+    *) echo "Error: unknown mode '$MODE'. Use: overview, text, detail" >&2; exit 1 ;;
+  esac
+}
+
+# ── Dependency check ───────────────────────────────────────────────────────
+check_deps() {
+  if ! command -v ffmpeg &>/dev/null; then
+    echo "Error: ffmpeg is required. Install with: brew install ffmpeg" >&2
+    exit 1
+  fi
+  if ! command -v ffprobe &>/dev/null; then
+    echo "Error: ffprobe is required (comes with ffmpeg)." >&2
+    exit 1
+  fi
+  if $MONTAGE && ! command -v montage &>/dev/null; then
+    echo "Error: ImageMagick is required for --montage. Install with: brew install imagemagick" >&2
+    exit 1
+  fi
+}
+
+# ── Parse args ─────────────────────────────────────────────────────────────
+VIDEO=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage ;;
+    --frames) FRAMES="$2"; shift 2 ;;
+    --interval) INTERVAL="$2"; shift 2 ;;
+    --mode) MODE="$2"; shift 2 ;;
+    --montage) MONTAGE=true; shift ;;
+    --output) OUTPUT_DIR="$2"; shift 2 ;;
+    --no-timestamps) TIMESTAMPS=false; shift ;;
+    --cleanup) CLEANUP=true; shift ;;
+    -*) echo "Unknown option: $1" >&2; exit 1 ;;
+    *)
+      if [[ -z "$VIDEO" ]]; then
+        VIDEO="$1"
+      else
+        echo "Error: multiple video files not supported" >&2; exit 1
+      fi
+      shift ;;
+  esac
+done
+
+if [[ -z "$VIDEO" ]]; then
+  echo "Error: no video file specified" >&2
+  echo "Usage: ${SCRIPT_NAME} <video> [options]" >&2
+  exit 1
+fi
+
+if [[ ! -f "$VIDEO" ]]; then
+  echo "Error: file not found: $VIDEO" >&2
+  exit 1
+fi
+
+get_mode_settings
+check_deps
+
+# ── Get video info ─────────────────────────────────────────────────────────
+DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$VIDEO" 2>/dev/null | head -1)
+DURATION_INT=${DURATION%.*}
+
+if [[ -z "$DURATION" || "$DURATION_INT" -eq 0 ]]; then
+  echo "Error: could not determine video duration" >&2
+  exit 1
+fi
+
+# Detect original video dimensions (strip commas/whitespace from ffprobe output)
+V_WIDTH=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$VIDEO" 2>/dev/null | head -1 | tr -d ',[:space:]')
+V_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$VIDEO" 2>/dev/null | head -1 | tr -d ',[:space:]')
+
+# Adjust output dimensions to match source aspect ratio
+if [[ -n "$V_WIDTH" && -n "$V_HEIGHT" && "$V_WIDTH" -gt 0 ]]; then
+  if [[ "$V_HEIGHT" -gt "$V_WIDTH" ]]; then
+    # Portrait (9:16 etc) — fix height to mode height, scale width proportionally
+    H_OUT=$H
+    W_OUT=$(echo "scale=0; $H_OUT * $V_WIDTH / $V_HEIGHT" | bc)
+    # Ensure even number (ffmpeg requires it)
+    W_OUT=$(( (W_OUT / 2) * 2 ))
+    ORIENTATION="portrait"
+  else
+    # Landscape (16:9 etc) — fix width to mode width, scale height proportionally
+    W_OUT=$W
+    H_OUT=$(echo "scale=0; $W_OUT * $V_HEIGHT / $V_WIDTH" | bc)
+    H_OUT=$(( (H_OUT / 2) * 2 ))
+    ORIENTATION="landscape"
+  fi
+else
+  W_OUT=$W
+  H_OUT=$H
+  ORIENTATION="landscape"
+fi
+
+# ── Calculate frame points ─────────────────────────────────────────────────
+if [[ -n "$INTERVAL" ]]; then
+  FRAMES=$(( DURATION_INT / INTERVAL ))
+  [[ $FRAMES -lt 1 ]] && FRAMES=1
+fi
+
+[[ $FRAMES -gt $DURATION_INT ]] && FRAMES=$DURATION_INT
+
+# ── Setup output ───────────────────────────────────────────────────────────
+BASENAME=$(basename "$VIDEO" | sed 's/\.[^.]*$//')
+if [[ -z "$OUTPUT_DIR" ]]; then
+  OUTPUT_DIR="$(dirname "$VIDEO")/${BASENAME}_vshot"
+fi
+mkdir -p "$OUTPUT_DIR"
+
+# ── Extract frames ─────────────────────────────────────────────────────────
+echo "📹 ${SCRIPT_NAME} v${VERSION}"
+echo "   Video:    $(basename "$VIDEO") (${DURATION_INT}s, ${V_WIDTH}x${V_HEIGHT} ${ORIENTATION})"
+echo "   Mode:     $MODE (${W_OUT}x${H_OUT})"
+echo "   Frames:   $FRAMES"
+echo "   Output:   $OUTPUT_DIR/"
+echo ""
+
+FPS=$(echo "scale=6; $FRAMES / $DURATION" | bc)
+
+echo -n "   Extracting frames..."
+
+ffmpeg -v error -i "$VIDEO" \
+  -vf "fps=${FPS},scale=${W_OUT}:${H_OUT}" \
+  -q:v $(( (100 - Q) * 31 / 100 + 1 )) \
+  "${OUTPUT_DIR}/frame_%04d.jpg" \
+  2>/dev/null
+
+EXTRACTED=$(ls -1 "${OUTPUT_DIR}"/frame_*.jpg 2>/dev/null | wc -l | tr -d ' ')
+echo " done (${EXTRACTED} frames)"
+
+# ── Burn timestamps ────────────────────────────────────────────────────────
+if $TIMESTAMPS && [[ "$EXTRACTED" -gt 0 ]]; then
+  echo -n "   Adding timestamps..."
+  STEP=$(echo "scale=2; $DURATION / $EXTRACTED" | bc)
+  i=0
+  for frame in "${OUTPUT_DIR}"/frame_*.jpg; do
+    SECS=$(echo "scale=0; $i * $STEP / 1" | bc)
+    MINS=$((SECS / 60))
+    REMAINING=$((SECS % 60))
+    TS=$(printf "%d:%02d" "$MINS" "$REMAINING")
+
+    ffmpeg -v error -y -i "$frame" \
+      -vf "drawtext=text='${TS}':x=8:y=h-24:fontsize=16:fontcolor=white:borderw=2:bordercolor=black" \
+      "${frame}.tmp.jpg" 2>/dev/null && mv "${frame}.tmp.jpg" "$frame"
+
+    i=$((i + 1))
+  done
+  echo " done"
+fi
+
+# ── Create montage ─────────────────────────────────────────────────────────
+if $MONTAGE && [[ "$EXTRACTED" -gt 0 ]]; then
+  echo -n "   Creating montage..."
+
+  # Calculate grid: aim for a reasonable final image aspect ratio
+  if [[ "$ORIENTATION" == "portrait" ]]; then
+    # Portrait frames: more columns to fill horizontal space
+    COLS=$(echo "scale=0; sqrt($EXTRACTED * 2)" | bc)
+  else
+    # Landscape frames: standard 16:9-ish grid
+    COLS=$(echo "scale=0; sqrt($EXTRACTED * 16 / 9)" | bc)
+  fi
+  [[ $COLS -lt 2 ]] && COLS=2
+  ROWS=$(( (EXTRACTED + COLS - 1) / COLS ))
+
+  TILE="${COLS}x${ROWS}"
+  MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage.jpg"
+
+  montage "${OUTPUT_DIR}"/frame_*.jpg \
+    -tile "$TILE" \
+    -geometry "${W_OUT}x${H_OUT}+4+4" \
+    -background '#0e0e1a' \
+    -quality "$Q" \
+    "$MONTAGE_FILE" 2>&1 | grep -v "^$" >/dev/null || true
+
+  MONTAGE_SIZE=$(du -h "$MONTAGE_FILE" | cut -f1 | tr -d ' ')
+  echo " done"
+  echo ""
+  echo "   📊 Montage: ${BASENAME}_montage.jpg (${TILE} grid, ${MONTAGE_SIZE})"
+
+  if $CLEANUP; then
+    rm -f "${OUTPUT_DIR}"/frame_*.jpg
+    echo "   🧹 Individual frames removed"
+  fi
+else
+  echo ""
+fi
+
+# ── Summary ────────────────────────────────────────────────────────────────
+TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" | cut -f1 | tr -d ' ')
+echo "   📁 Total: ${TOTAL_SIZE} → ${OUTPUT_DIR}/"
+
+if $MONTAGE; then
+  MONTAGE_PATH="$(cd "$OUTPUT_DIR" && pwd)/${BASENAME}_montage.jpg"
+  echo ""
+  echo "   💡 AI に読ませる:"
+  echo "   Read(\"${MONTAGE_PATH}\")"
+fi
