@@ -1,7 +1,7 @@
 {
   "name": "vshot",
   "description": "Watch videos with AI. Extract frames and create montage grids so Claude can analyze video content.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "author": {
     "name": "ClaudeCodeCafe"
   },
