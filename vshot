@@ -20,6 +20,7 @@ MONTAGE=false
 OUTPUT_DIR=""
 TIMESTAMPS=true
 CLEANUP=false
+SCENE=""
 
 # ── Usage ──────────────────────────────────────────────────────────────────
 usage() {
@@ -33,6 +34,8 @@ OPTIONS:
   --frames N        Number of frames to extract (default: 20)
                     Note: capped to video duration in seconds for even spacing.
   --interval N      Extract every N seconds (overrides --frames)
+  --scene [N]       Extract only scene-change frames (threshold 0.0-1.0, default: 0.3)
+                    Lower = more frames, higher = fewer frames. Overrides --frames.
   --mode MODE       overview | text | detail (default: overview)
   --montage         Combine all frames into a single grid image
   --output DIR      Output directory (default: <video>_vshot/)
@@ -51,6 +54,8 @@ EXAMPLES:
   ${SCRIPT_NAME} video.mp4 --mode text --montage    # text-readable grid
   ${SCRIPT_NAME} video.mp4 --interval 5 --montage   # every 5s, grid
   ${SCRIPT_NAME} video.mp4 --frames 30 --mode detail # 30 high-res frames
+  ${SCRIPT_NAME} video.mp4 --scene --montage         # scene changes only
+  ${SCRIPT_NAME} video.mp4 --scene 0.5 --montage     # fewer scene changes
 EOF
   exit 0
 }
@@ -147,6 +152,13 @@ while [ $# -gt 0 ]; do
         echo "Error: --output requires a value" >&2; exit 1
       fi
       OUTPUT_DIR="$2"; shift 2 ;;
+    --scene)
+      # --scene can optionally take a threshold value (0.0-1.0)
+      if [ $# -ge 2 ] && echo "$2" | grep -qE '^0?\.[0-9]+$|^1(\.0+)?$'; then
+        SCENE="$2"; shift 2
+      else
+        SCENE="0.3"; shift
+      fi ;;
     --no-timestamps) TIMESTAMPS=false; shift ;;
     --cleanup) CLEANUP=true; shift ;;
     -*) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -256,8 +268,15 @@ else
 fi
 
 # ── Calculate frame extraction rate ────────────────────────────────────────
-if [ -n "$INTERVAL" ]; then
+SCENE_MODE=false
+if [ -n "$SCENE" ]; then
+  # Scene detection: extract only frames where visual change exceeds threshold
+  SCENE_MODE=true
+  VF_FILTER="select='gt(scene,${SCENE})',scale=${W_OUT}:${H_OUT}"
+  FRAMES="?"
+elif [ -n "$INTERVAL" ]; then
   FPS_FILTER="fps=1/${INTERVAL}"
+  VF_FILTER="${FPS_FILTER},scale=${W_OUT}:${H_OUT}"
   # Estimate frame count for display
   FRAMES=$(echo "$DURATION_INT $INTERVAL" | awk '{d=int($1/$2); if(d<1) d=1; print d}')
 else
@@ -268,6 +287,7 @@ else
   fi
   FPS=$(echo "$FRAMES $DURATION" | awk '{printf "%.6f", $1 / $2}')
   FPS_FILTER="fps=${FPS}"
+  VF_FILTER="${FPS_FILTER},scale=${W_OUT}:${H_OUT}"
 fi
 
 # ── Setup output (#10: -- before path operands) ───────────────────────────
@@ -284,24 +304,38 @@ FRAME_PREFIX="vshot_${RUN_ID}_frame"
 echo "📹 ${SCRIPT_NAME} v${VERSION}"
 echo "   Video:    $(basename "$VIDEO") (${DURATION_INT}s, ${V_WIDTH}x${V_HEIGHT} ${ORIENTATION})"
 echo "   Mode:     $MODE (${W_OUT}x${H_OUT})"
-echo "   Frames:   $FRAMES"
+if $SCENE_MODE; then
+  echo "   Scene:    threshold=${SCENE} (auto frame count)"
+else
+  echo "   Frames:   $FRAMES"
+fi
 echo "   Output:   $OUTPUT_DIR/"
 echo ""
 
 echo -n "   Extracting frames..."
 
 # (#3) Capture stderr, check exit code
+# Scene mode needs -vsync vfr and yuvj420p for JPEG compatibility
+EXTRA_OPTS=""
+if $SCENE_MODE; then
+  EXTRA_OPTS="-vsync vfr -pix_fmt yuvj420p"
+fi
+# shellcheck disable=SC2086
 if ! ffmpeg -v error -i "$VIDEO" \
-  -vf "${FPS_FILTER},scale=${W_OUT}:${H_OUT}" \
+  -vf "${VF_FILTER}" \
+  $EXTRA_OPTS \
   -q:v $(( (100 - Q) * 31 / 100 + 1 )) \
   "${OUTPUT_DIR}/${FRAME_PREFIX}_%04d.jpg" \
   2>"$STDERR_TMP"; then
-  echo " FAILED" >&2
-  echo "Error: ffmpeg frame extraction failed" >&2
-  if [ -s "$STDERR_TMP" ]; then
-    echo "  ffmpeg: $(cat "$STDERR_TMP")" >&2
+  if ! $SCENE_MODE; then
+    echo " FAILED" >&2
+    echo "Error: ffmpeg frame extraction failed" >&2
+    if [ -s "$STDERR_TMP" ]; then
+      echo "  ffmpeg: $(cat "$STDERR_TMP")" >&2
+    fi
+    exit 1
   fi
-  exit 1
+  # Scene mode: ffmpeg may exit non-zero when 0 frames match — that's OK
 fi
 
 # (#4) Use find for frame counting (bash 3 compatible)
@@ -309,6 +343,12 @@ EXTRACTED=$(find "$OUTPUT_DIR" -name "${FRAME_PREFIX}_*.jpg" -type f 2>/dev/null
 echo " done (${EXTRACTED} frames)"
 
 if [ "$EXTRACTED" -eq 0 ]; then
+  if $SCENE_MODE; then
+    echo ""
+    echo "   ⚠️  No scene changes detected at threshold=${SCENE}. Try a lower value (e.g. --scene 0.2)."
+    echo "   📁 Total: 0B → ${OUTPUT_DIR}/"
+    exit 0
+  fi
   echo "Error: no frames were extracted" >&2
   exit 1
 fi

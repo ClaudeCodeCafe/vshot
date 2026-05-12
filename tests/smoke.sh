@@ -126,6 +126,29 @@ echo "── Interval ──"
 assert "interval mode" "$VSHOT" "$VIDEO" --interval 1 --output "${TMPDIR_TEST}/interval"
 
 echo ""
+echo "── Scene detection ──"
+# Generate a video with scene changes for --scene testing
+SCENE_VIDEO="${TMPDIR_TEST}/scene_test.mp4"
+ffmpeg -v error -f lavfi -i "color=c=red:s=320x180:d=2[r];color=c=blue:s=320x180:d=2[b];[r][b]concat=n=2:v=1:a=0" \
+  -c:v libx264 -t 4 -y "$SCENE_VIDEO" 2>/dev/null || \
+  ffmpeg -v error -f lavfi -i "color=c=red:s=320x180:d=2[r];color=c=blue:s=320x180:d=2[b];[r][b]concat=n=2:v=1:a=0" \
+    -c:v mpeg4 -t 4 -y "$SCENE_VIDEO" 2>/dev/null
+SCENE_DIR="${TMPDIR_TEST}/scene"
+assert "scene detection" "$VSHOT" "$SCENE_VIDEO" --scene --output "$SCENE_DIR"
+SCENE_FRAMES=$(find "$SCENE_DIR" -maxdepth 1 -name "vshot_*_frame_*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
+if [ "$SCENE_FRAMES" -ge 1 ]; then
+  echo "  ✅ scene extracted ${SCENE_FRAMES} frame(s)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ scene extracted 0 frames"
+  FAIL=$((FAIL + 1))
+fi
+SCENE_MONTAGE_DIR="${TMPDIR_TEST}/scene_montage"
+assert "scene + montage" "$VSHOT" "$SCENE_VIDEO" --scene --montage --output "$SCENE_MONTAGE_DIR"
+assert_count "scene montage exists" "$SCENE_MONTAGE_DIR" "*_montage_*.jpg" 1
+assert "scene with custom threshold" "$VSHOT" "$SCENE_VIDEO" --scene 0.5 --output "${TMPDIR_TEST}/scene_custom"
+
+echo ""
 echo "── Error handling ──"
 assert_fail "missing file errors" "$VSHOT" /nonexistent.mp4
 assert_fail "invalid --frames errors" "$VSHOT" "$VIDEO" --frames -1

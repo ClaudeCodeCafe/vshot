@@ -105,6 +105,12 @@ vshot video.mp4 --montage --mode detail --frames 30
 
 # Clean up individual frames after montage
 vshot video.mp4 --montage --cleanup
+
+# Scene detection — only extract frames where the visual content changes
+vshot video.mp4 --scene --montage
+
+# Stricter scene detection (fewer frames)
+vshot video.mp4 --scene 0.5 --montage
 ```
 
 ### Options
@@ -115,6 +121,7 @@ vshot video.mp4 --montage --cleanup
 | `--mode` | overview / text / detail | overview |
 | `--frames N` | Number of frames | 20 |
 | `--interval N` | Extract every N seconds | — |
+| `--scene [N]` | Extract only scene-change frames (0.0-1.0) | 0.3 |
 | `--output DIR` | Custom output directory | `<video>_vshot/` |
 | `--cleanup` | Remove frames after montage | off |
 | `--no-timestamps` | Skip timestamp overlay | — |
