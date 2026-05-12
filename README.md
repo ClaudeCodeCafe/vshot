@@ -2,8 +2,6 @@
 
 **Video frame extraction for AI.** One montage image. One `Read()` call. Your AI can now watch videos.
 
-By [morinpic](https://github.com/morinpic)
-
 <p align="center">
   <img src="docs/montage-example.jpg" alt="vshot montage example" width="720">
   <br>
