@@ -9,7 +9,8 @@ VERSION="0.1.3"
 SCRIPT_NAME="vshot"
 
 # Unique prefix per run to avoid stale frame collisions (#1)
-RUN_ID=$$
+# Include epoch seconds to prevent PID-reuse collisions
+RUN_ID="$$_$(date +%s)"
 
 # ── Defaults ───────────────────────────────────────────────────────────────
 MODE="overview"
@@ -87,6 +88,36 @@ is_positive_integer() {
     0) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+# ── Font detection (shared by timestamp burn-in and montage) ──────────────
+# Homebrew ImageMagick / ffmpeg often lack default font config.
+# Detect a usable system font once and reuse it.
+DETECTED_FONT=""
+detect_font() {
+  if [ -n "$DETECTED_FONT" ]; then
+    return
+  fi
+  if command -v fc-match &>/dev/null; then
+    DETECTED_FONT=$(fc-match -f '%{file}' 2>/dev/null || true)
+    if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
+      return
+    fi
+    DETECTED_FONT=""
+  fi
+  # Search common system font paths as last resort
+  local font_path
+  for font_path in \
+    /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+    /usr/share/fonts/TTF/DejaVuSans.ttf \
+    /System/Library/Fonts/Helvetica.ttc \
+    /System/Library/Fonts/Geneva.ttf; do
+    if [ -f "$font_path" ]; then
+      DETECTED_FONT="$font_path"
+      return
+    fi
+  done
+  echo "Warning: no usable font found. Timestamps and montage labels may fail." >&2
 }
 
 # ── Parse args (#7: check $# before accessing $2) ─────────────────────────
@@ -285,6 +316,12 @@ fi
 # ── Burn timestamps (#15: count and warn on failures) ─────────────────────
 if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
   echo -n "   Adding timestamps..."
+  detect_font
+  # Build fontfile option for drawtext if a font was detected
+  DRAWTEXT_FONT=""
+  if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
+    DRAWTEXT_FONT=":fontfile='${DETECTED_FONT}'"
+  fi
   # Use interval directly when set, otherwise calculate step from duration (#8)
   if [ -n "$INTERVAL" ]; then
     STEP="$INTERVAL"
@@ -300,7 +337,7 @@ if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
     TS=$(printf "%d:%02d" "$MINS" "$REMAINING")
 
     if ffmpeg -v error -y -i "$frame" \
-      -vf "drawtext=text='${TS}':x=8:y=h-24:fontsize=16:fontcolor=white:borderw=2:bordercolor=black" \
+      -vf "drawtext=text='${TS}':x=8:y=h-24:fontsize=16:fontcolor=white:borderw=2:bordercolor=black${DRAWTEXT_FONT}" \
       "${frame}.tmp.jpg" 2>"$STDERR_TMP" && [ -f "${frame}.tmp.jpg" ]; then
       mv -- "${frame}.tmp.jpg" "$frame"
     else
@@ -335,26 +372,42 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   TILE="${COLS}x${ROWS}"
   MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
 
-  # Detect a usable font for montage (Homebrew ImageMagick often lacks default font config)
-  MONTAGE_FONT=""
-  if ! montage -list font 2>/dev/null | grep -q "Font:"; then
-    MONTAGE_FONT=$(fc-match -f '%{file}' 2>/dev/null || true)
-  fi
+  # Use shared font detection for montage
+  detect_font
 
-  # (#5) Run montage directly, check exit code, verify output
+  # (#5) Run montage, with font fallback and retry
   run_montage() {
-    if [ -n "$MONTAGE_FONT" ] && [ -f "$MONTAGE_FONT" ]; then
-      montage -font "$MONTAGE_FONT" "$@"
+    if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
+      montage -font "$DETECTED_FONT" "$@"
     else
       montage "$@"
     fi
   }
-  if ! run_montage "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg \
+
+  MONTAGE_OK=false
+  if run_montage "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg \
     -tile "$TILE" \
     -geometry "${W_OUT}x${H_OUT}+4+4" \
     -background '#0e0e1a' \
     -quality "$Q" \
     "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+    MONTAGE_OK=true
+  elif [ -z "$DETECTED_FONT" ]; then
+    # First attempt failed without a font — try forcing font detection and retry
+    detect_font
+    if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
+      if montage -font "$DETECTED_FONT" "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg \
+        -tile "$TILE" \
+        -geometry "${W_OUT}x${H_OUT}+4+4" \
+        -background '#0e0e1a' \
+        -quality "$Q" \
+        "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+        MONTAGE_OK=true
+      fi
+    fi
+  fi
+
+  if ! $MONTAGE_OK; then
     echo " FAILED" >&2
     echo "Error: montage creation failed" >&2
     if [ -s "$STDERR_TMP" ]; then
@@ -377,7 +430,7 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
 
   # (#6) Only delete this run's prefixed frames
   if $CLEANUP; then
-    rm -f -- "${OUTPUT_DIR}"/${FRAME_PREFIX}_*.jpg
+    rm -f -- "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg
     echo "   🧹 Individual frames removed"
   fi
 else
