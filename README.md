@@ -137,7 +137,7 @@ vshot video.mp4 --scene 0.5 --montage
 </tr>
 <tr>
 <td><img src="docs/montage-example.jpg" width="360"></td>
-<td><img src="docs/montage-scene.jpg" width="360"></td>
+<td><img src="docs/montage-scene-5x1.jpg" width="360"></td>
 </tr>
 <tr>
 <td>12 frames, 140KB — includes duplicates</td>
