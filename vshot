@@ -230,7 +230,7 @@ if [ -n "$INTERVAL" ]; then
   FRAMES=$(echo "$DURATION_INT $INTERVAL" | awk '{d=int($1/$2); if(d<1) d=1; print d}')
 else
   # (#12) Warn if FRAMES was capped
-  if [ $FRAMES -gt $DURATION_INT ]; then
+  if [ "$FRAMES" -gt "$DURATION_INT" ]; then
     echo "Warning: --frames $FRAMES exceeds video duration (${DURATION_INT}s). Capping to $DURATION_INT." >&2
     FRAMES=$DURATION_INT
   fi
@@ -292,7 +292,7 @@ if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
   fi
   i=0
   TS_FAILURES=0
-  for frame in "${OUTPUT_DIR}"/${FRAME_PREFIX}_*.jpg; do
+  for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
     SECS=$(echo "$i $STEP" | awk '{printf "%d", $1 * $2}')
     MINS=$((SECS / 60))
     REMAINING=$((SECS % 60))
