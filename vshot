@@ -249,6 +249,15 @@ if ! is_positive_integer "$V_WIDTH" || ! is_positive_integer "$V_HEIGHT"; then
   exit 1
 fi
 
+# Check for rotation metadata (phone videos often store landscape dims + 90° rotation)
+V_ROTATION=$(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=rotation -of csv=p=0 -- "$VIDEO" 2>/dev/null | head -1 | tr -d '[:space:]-')
+# Swap dimensions if rotated 90 or 270 degrees
+if [ "$V_ROTATION" = "90" ] || [ "$V_ROTATION" = "270" ]; then
+  V_TMP=$V_WIDTH
+  V_WIDTH=$V_HEIGHT
+  V_HEIGHT=$V_TMP
+fi
+
 # Adjust output dimensions to match source aspect ratio (#8: awk instead of bc)
 if [ -n "$V_WIDTH" ] && [ -n "$V_HEIGHT" ] && [ "$V_WIDTH" -gt 0 ]; then
   if [ "$V_HEIGHT" -gt "$V_WIDTH" ]; then
@@ -286,8 +295,8 @@ if [ -n "$SCENE" ]; then
 elif [ -n "$INTERVAL" ]; then
   FPS_FILTER="fps=1/${INTERVAL}"
   VF_FILTER="${FPS_FILTER},scale=${W_OUT}:${H_OUT}"
-  # Estimate frame count for display
-  FRAMES=$(echo "$DURATION_INT $INTERVAL" | awk '{d=int($1/$2); if(d<1) d=1; print d}')
+  # Estimate frame count: fps=1/N starts at 0s, so count = floor(duration/interval) + 1
+  FRAMES=$(echo "$DURATION_INT $INTERVAL" | awk '{d=int($1/$2)+1; if(d<1) d=1; print d}')
 else
   # (#12) Warn if FRAMES was capped
   if [ "$FRAMES" -gt "$DURATION_INT" ]; then
@@ -300,10 +309,14 @@ else
 fi
 
 # ── Setup output (#10: -- before path operands) ───────────────────────────
-BASENAME=$(basename "$VIDEO" | sed 's/\.[^.]*$//')
+BASENAME=$(basename -- "$VIDEO" | sed 's/\.[^.]*$//')
 if [ -z "$OUTPUT_DIR" ]; then
-  OUTPUT_DIR="$(dirname "$VIDEO")/${BASENAME}_vshot"
+  OUTPUT_DIR="$(dirname -- "$VIDEO")/${BASENAME}_vshot"
 fi
+# Normalize OUTPUT_DIR to prevent dash-prefixed paths breaking commands
+case "$OUTPUT_DIR" in
+  -*) OUTPUT_DIR="./$OUTPUT_DIR" ;;
+esac
 mkdir -p -- "$OUTPUT_DIR"
 
 # Frame filename prefix for this run (#1)
