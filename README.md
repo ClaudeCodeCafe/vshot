@@ -7,7 +7,7 @@
 <p align="center">
   <img src="docs/montage-example.jpg" alt="vshot montage example" width="720">
   <br>
-  <em>12 frames from a 68-second video → 1 image, 156KB. Portrait auto-detected.</em>
+  <em>5 scene-change frames from a 62-second video → 1 image, 76KB. --scene auto-detected key moments.</em>
 </p>
 
 ## The Problem
