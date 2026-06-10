@@ -24,6 +24,9 @@ vshot video.mp4                        # Extract 20 frames
 vshot video.mp4 --montage              # Combine into single grid image
 vshot video.mp4 --mode text --montage  # Text-readable resolution
 vshot video.mp4 --scene --montage      # Scene-change frames only
+vshot video.mp4 --at 3.5,12,48         # Pinpoint extraction at specific seconds
+vshot video.mp4 --montage --cols 4     # Fixed grid columns
+vshot video.mp4 --montage --json       # JSON result line on stdout
 ```
 
 ## Plugin Usage

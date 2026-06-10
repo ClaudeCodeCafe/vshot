@@ -209,11 +209,61 @@ else
 fi
 
 echo ""
+echo "── Pinpoint extraction (--at) ──"
+AT_DIR="${TMPDIR_TEST}/at"
+assert "--at extraction" "$VSHOT" "$VIDEO" --at 0.5,1.5 --output "$AT_DIR"
+assert_count "exactly 2 frames" "$AT_DIR" "vshot_*_frame_*.jpg" 2
+assert_count "frames carry timestamp suffix" "$AT_DIR" "vshot_*_frame_*_t*.jpg" 2
+assert "--at skips out-of-range times" "$VSHOT" "$VIDEO" --at 1,999 --output "${TMPDIR_TEST}/at_range"
+assert_count "out-of-range time skipped" "${TMPDIR_TEST}/at_range" "vshot_*_frame_*.jpg" 1
+assert "--at + montage" "$VSHOT" "$VIDEO" --at 0.5,1.5,2.5 --montage --output "${TMPDIR_TEST}/at_montage"
+assert_count "at montage exists" "${TMPDIR_TEST}/at_montage" "*_montage_*.jpg" 1
+
+echo ""
+echo "── Montage columns (--cols) ──"
+COLS_DIR="${TMPDIR_TEST}/cols"
+assert "--cols 2 montage" "$VSHOT" "$VIDEO" --montage --cols 2 --frames 3 --output "$COLS_DIR"
+assert_count "cols montage exists" "$COLS_DIR" "*_montage_*.jpg" 1
+
+echo ""
+echo "── JSON output (--json) ──"
+JSON_DIR="${TMPDIR_TEST}/json"
+JSON_OUT=$("$VSHOT" "$VIDEO" --montage --frames 2 --json --output "$JSON_DIR" 2>/dev/null)
+if echo "$JSON_OUT" | grep -q '"montage":"'; then
+  echo "  ✅ --json emits montage path"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --json missing montage path: $JSON_OUT"
+  FAIL=$((FAIL + 1))
+fi
+JSON_MONTAGE=$(echo "$JSON_OUT" | sed 's/.*"montage":"\([^"]*\)".*/\1/')
+assert_nonempty "--json montage path exists" "$JSON_MONTAGE"
+if echo "$JSON_OUT" | grep -q '"files":\[{"path":'; then
+  echo "  ✅ --json lists frame files with times"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --json files list missing: $JSON_OUT"
+  FAIL=$((FAIL + 1))
+fi
+if command -v python3 >/dev/null 2>&1; then
+  if echo "$JSON_OUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+    echo "  ✅ --json output is valid JSON"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ --json output is invalid JSON: $JSON_OUT"
+    FAIL=$((FAIL + 1))
+  fi
+fi
+
+echo ""
 echo "── Error handling ──"
 assert_fail "missing file errors" "$VSHOT" /nonexistent.mp4
 assert_fail "invalid --frames errors" "$VSHOT" "$VIDEO" --frames -1
 assert_fail "invalid --mode errors" "$VSHOT" "$VIDEO" --mode bogus
 assert_fail "no args errors" "$VSHOT"
+assert_fail "invalid --at errors" "$VSHOT" "$VIDEO" --at abc
+assert_fail "all --at out-of-range errors" "$VSHOT" "$VIDEO" --at 999
+assert_fail "invalid --cols errors" "$VSHOT" "$VIDEO" --montage --cols 0 --frames 2
 
 echo ""
 echo "── Font fallback ──"

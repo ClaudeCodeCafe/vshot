@@ -59,6 +59,54 @@ brew install ffmpeg imagemagick
 
 Then rerun the check to confirm.
 
+## CLI shim (optional)
+
+The plugin binary lives under a versioned path (`~/.claude/plugins/cache/vshot/vshot/<version>/vshot`) that changes on every update, which makes it awkward to call from shells and scripts.
+
+Check whether `vshot` is already reachable:
+
+```bash
+command -v vshot || echo "vshot not on PATH"
+```
+
+If it is not on PATH, use `AskUserQuestion` to ask:
+
+- Option 1: "Install vshot shim to ~/.local/bin (Recommended)" — a tiny wrapper that resolves the latest installed plugin version at runtime, so it survives plugin updates
+- Option 2: "Skip"
+
+If the user chooses install, run:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/vshot" <<'SHIM'
+#!/bin/bash
+# vshot shim — resolves the latest plugin-installed version at runtime
+BASE="$HOME/.claude/plugins/cache/vshot/vshot"
+LATEST=$(ls -d "$BASE"/*/ 2>/dev/null | sort -V | tail -1)
+if [ -z "$LATEST" ] || [ ! -x "${LATEST}vshot" ]; then
+  echo "vshot shim: plugin not found under $BASE (reinstall with: /plugin install vshot@vshot)" >&2
+  exit 1
+fi
+exec "${LATEST}vshot" "$@"
+SHIM
+chmod +x "$HOME/.local/bin/vshot"
+"$HOME/.local/bin/vshot" --version
+```
+
+Then check that `~/.local/bin` is on PATH:
+
+```bash
+case ":$PATH:" in *":$HOME/.local/bin:"*) echo "PATH ok" ;; *) echo "PATH missing ~/.local/bin" ;; esac
+```
+
+If PATH is missing it, tell the user to add this line to their shell profile (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+## Wrap up
+
 If everything is installed, say:
 
 ```

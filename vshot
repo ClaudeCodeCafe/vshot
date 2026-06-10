@@ -5,7 +5,7 @@ set -eo pipefail
 # Extract frames from video and optionally create a montage grid image.
 # Designed to let AI assistants "watch" videos via image analysis.
 
-VERSION="0.2.1"
+VERSION="0.3.0"
 SCRIPT_NAME="vshot"
 
 # Unique prefix per run to avoid stale frame collisions (#1)
@@ -21,6 +21,10 @@ OUTPUT_DIR=""
 TIMESTAMPS=true
 CLEANUP=false
 SCENE=""
+AT=""
+COLS_OPT=""
+JSON=false
+CLEANED=false
 
 # ── Usage ──────────────────────────────────────────────────────────────────
 usage() {
@@ -36,11 +40,16 @@ OPTIONS:
   --interval N      Extract every N seconds (overrides --frames)
   --scene [N]       Extract only scene-change frames (threshold 0.0-1.0, default: 0.3)
                     Lower = more frames, higher = fewer frames. Overrides --frames.
+  --at LIST         Extract frames at specific times in seconds (comma-separated,
+                    decimals allowed, e.g. 3.5,12,48). Overrides --frames/--interval/--scene.
   --mode MODE       overview | text | detail (default: overview)
   --montage         Combine all frames into a single grid image
+  --cols N          Number of montage grid columns (default: auto from aspect ratio)
   --output DIR      Output directory (default: <video>_vshot/)
   --no-timestamps   Don't burn timestamps into extracted frames
   --cleanup         Remove individual frames after creating montage
+  --json            Print a machine-readable JSON result line to stdout
+                    (human-readable progress goes to stderr)
   -h, --help        Show this help
 
 MODES:
@@ -56,6 +65,8 @@ EXAMPLES:
   ${SCRIPT_NAME} video.mp4 --frames 30 --mode detail # 30 high-res frames
   ${SCRIPT_NAME} video.mp4 --scene --montage         # scene changes only
   ${SCRIPT_NAME} video.mp4 --scene 0.5 --montage     # fewer scene changes
+  ${SCRIPT_NAME} video.mp4 --at 3.5,12,48 --montage  # pinpoint extraction
+  ${SCRIPT_NAME} video.mp4 --montage --json          # machine-readable result
 EOF
   exit 0
 }
@@ -93,6 +104,41 @@ is_positive_integer() {
     0) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+# Format seconds (int or float) as M:SS for display
+format_ts() {
+  echo "$1" | awk '{s = int($1); printf "%d:%02d", int(s / 60), s % 60}'
+}
+
+# ── JSON result output (--json) ────────────────────────────────────────────
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Emit one JSON line to fd 3 (the original stdout). No-op without --json.
+emit_json() {
+  $JSON || return 0
+  local out_abs files_json montage_json i fpath
+  out_abs=$(cd -- "$OUTPUT_DIR" 2>/dev/null && pwd)
+  [ -z "$out_abs" ] && out_abs="$OUTPUT_DIR"
+  files_json=""
+  if ! $CLEANED && [ "${#FRAME_FILES[@]}" -gt 0 ]; then
+    i=0
+    for fpath in "${FRAME_FILES[@]}"; do
+      [ -n "$files_json" ] && files_json="${files_json},"
+      files_json="${files_json}{\"path\":\"$(json_escape "${out_abs}/$(basename -- "$fpath")")\",\"time\":${FRAME_TIMES[$i]}}"
+      i=$((i + 1))
+    done
+  fi
+  if [ -n "${MONTAGE_FILE:-}" ] && [ -s "${MONTAGE_FILE:-}" ]; then
+    montage_json="\"$(json_escape "${out_abs}/$(basename -- "$MONTAGE_FILE")")\""
+  else
+    montage_json="null"
+  fi
+  printf '{"video":"%s","duration":%s,"mode":"%s","frames":%s,"output_dir":"%s","montage":%s,"files":[%s]}\n' \
+    "$(json_escape "$VIDEO")" "$DURATION" "$MODE" "${EXTRACTED:-0}" \
+    "$(json_escape "$out_abs")" "$montage_json" "$files_json" >&3
 }
 
 # ── Font detection (shared by timestamp burn-in and montage) ──────────────
@@ -159,6 +205,17 @@ while [ $# -gt 0 ]; do
       else
         SCENE="0.3"; shift
       fi ;;
+    --at)
+      if [ $# -lt 2 ]; then
+        echo "Error: --at requires a value" >&2; exit 1
+      fi
+      AT="$2"; shift 2 ;;
+    --cols)
+      if [ $# -lt 2 ]; then
+        echo "Error: --cols requires a value" >&2; exit 1
+      fi
+      COLS_OPT="$2"; shift 2 ;;
+    --json) JSON=true; shift ;;
     --no-timestamps) TIMESTAMPS=false; shift ;;
     --cleanup) CLEANUP=true; shift ;;
     -*) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -196,8 +253,38 @@ if [ -n "$INTERVAL" ]; then
   fi
 fi
 
+if [ -n "$COLS_OPT" ] && ! is_positive_integer "$COLS_OPT"; then
+  echo "Error: --cols must be a positive integer, got '$COLS_OPT'" >&2
+  exit 1
+fi
+
+# Parse --at into a validated list (range check happens after duration probe)
+AT_MODE=false
+AT_RAW=()
+if [ -n "$AT" ]; then
+  AT_MODE=true
+  set -f # no glob expansion of user input
+  for t in $(echo "$AT" | tr ',' ' '); do
+    if ! echo "$t" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+      echo "Error: --at times must be numbers in seconds, got '$t'" >&2
+      exit 1
+    fi
+    AT_RAW+=("$t")
+  done
+  set +f
+  if [ "${#AT_RAW[@]}" -eq 0 ]; then
+    echo "Error: --at requires at least one time value" >&2
+    exit 1
+  fi
+fi
+
 get_mode_settings
 check_deps
+
+# --json: route human-readable progress to stderr, keep original stdout on fd 3
+if $JSON; then
+  exec 3>&1 1>&2
+fi
 
 # ── Temp file for capturing stderr (#3) ───────────────────────────────────
 STDERR_TMP=$(mktemp "${TMPDIR:-/tmp}/vshot_stderr.XXXXXX")
@@ -223,6 +310,22 @@ DURATION_INT=$(echo "$DURATION" | awk '{d = int($1); if (d < 1 && $1 > 0) d = 1;
 if [ -z "$DURATION_INT" ] || [ "$DURATION_INT" -eq 0 ] 2>/dev/null; then
   echo "Error: could not determine video duration (got: $DURATION)" >&2
   exit 1
+fi
+
+# Sort --at times and drop ones beyond the video duration
+if $AT_MODE; then
+  AT_ARR=()
+  for t in $(printf '%s\n' "${AT_RAW[@]}" | sort -n); do
+    if awk -v t="$t" -v d="$DURATION" 'BEGIN{exit !(t < d)}'; then
+      AT_ARR+=("$t")
+    else
+      echo "Warning: --at ${t}s is beyond video duration (${DURATION_INT}s). Skipping." >&2
+    fi
+  done
+  if [ "${#AT_ARR[@]}" -eq 0 ]; then
+    echo "Error: all --at times are beyond video duration (${DURATION_INT}s)" >&2
+    exit 1
+  fi
 fi
 
 # Detect original video dimensions (#3, #9, #10: -- before path)
@@ -285,7 +388,10 @@ fi
 
 # ── Calculate frame extraction rate ────────────────────────────────────────
 SCENE_MODE=false
-if [ -n "$SCENE" ]; then
+if $AT_MODE; then
+  # Pinpoint mode: one ffmpeg seek per requested time (see extraction below)
+  FRAMES="${#AT_ARR[@]}"
+elif [ -n "$SCENE" ]; then
   # Scene detection: extract only frames where visual change exceeds threshold
   SCENE_MODE=true
   # showinfo captures PTS for accurate timestamps on scene-detected frames
@@ -328,7 +434,9 @@ FRAME_PREFIX="vshot_${RUN_ID}_frame"
 echo "📹 ${SCRIPT_NAME} v${VERSION}"
 echo "   Video:    $(basename "$VIDEO") (${DURATION_INT}s, ${V_WIDTH}x${V_HEIGHT} ${ORIENTATION})"
 echo "   Mode:     $MODE (${W_OUT}x${H_OUT})"
-if $SCENE_MODE; then
+if $AT_MODE; then
+  echo "   At:       $(echo "${AT_ARR[@]}" | tr ' ' ',')s (${FRAMES} frames)"
+elif $SCENE_MODE; then
   echo "   Scene:    threshold=${SCENE} (auto frame count)"
 elif [ -n "$INTERVAL" ]; then
   echo "   Interval: every ${INTERVAL}s"
@@ -349,14 +457,40 @@ if $SCENE_MODE; then
   # Use info level to capture showinfo PTS data for accurate timestamps
   FFMPEG_LOGLEVEL="info"
 fi
+QV=$(( (100 - Q) * 31 / 100 + 1 ))
 FFMPEG_EXIT=0
-# shellcheck disable=SC2086
-ffmpeg -v "$FFMPEG_LOGLEVEL" -i "$VIDEO" \
-  -vf "${VF_FILTER}" \
-  $EXTRA_OPTS \
-  -q:v $(( (100 - Q) * 31 / 100 + 1 )) \
-  "${OUTPUT_DIR}/${FRAME_PREFIX}_%04d.jpg" \
-  2>"$STDERR_TMP" || FFMPEG_EXIT=$?
+AT_TIMES=()
+if $AT_MODE; then
+  : > "$STDERR_TMP"
+  n=1
+  for t in "${AT_ARR[@]}"; do
+    OUT_FRAME="${OUTPUT_DIR}/${FRAME_PREFIX}_$(printf '%04d' "$n").jpg"
+    if ! ffmpeg -v error -ss "$t" -i "$VIDEO" \
+      -frames:v 1 -update 1 \
+      -vf "scale=${W_OUT}:${H_OUT}" \
+      -q:v "$QV" \
+      "$OUT_FRAME" 2>>"$STDERR_TMP"; then
+      FFMPEG_EXIT=1
+      break
+    fi
+    if [ -s "$OUT_FRAME" ]; then
+      # Track which times actually produced a frame (keeps timestamps aligned)
+      AT_TIMES+=("$t")
+      n=$((n + 1))
+    else
+      rm -f -- "$OUT_FRAME"
+      echo "Warning: could not decode a frame at ${t}s. Skipping." >&2
+    fi
+  done
+else
+  # shellcheck disable=SC2086
+  ffmpeg -v "$FFMPEG_LOGLEVEL" -i "$VIDEO" \
+    -vf "${VF_FILTER}" \
+    $EXTRA_OPTS \
+    -q:v "$QV" \
+    "${OUTPUT_DIR}/${FRAME_PREFIX}_%04d.jpg" \
+    2>"$STDERR_TMP" || FFMPEG_EXIT=$?
+fi
 
 # Extract PTS values from showinfo output for scene mode timestamps
 if $SCENE_MODE && [ -s "$STDERR_TMP" ]; then
@@ -389,6 +523,7 @@ if [ "$FFMPEG_EXIT" -ne 0 ]; then
     echo "   ⚠️  No scene changes detected at threshold=${SCENE}. Try a lower value (e.g. --scene 0.2)."
     TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" 2>/dev/null | cut -f1 | tr -d ' ')
     echo "   📁 Total: ${TOTAL_SIZE:-0B} → ${OUTPUT_DIR}/"
+    emit_json
     exit 2
   else
     echo " FAILED" >&2
@@ -408,13 +543,48 @@ if [ "$EXTRACTED" -eq 0 ]; then
     echo "   ⚠️  No scene changes detected at threshold=${SCENE}. Try a lower value (e.g. --scene 0.2)."
     TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" 2>/dev/null | cut -f1 | tr -d ' ')
     echo "   📁 Total: ${TOTAL_SIZE:-0B} → ${OUTPUT_DIR}/"
+    emit_json
     exit 2
   fi
   echo "Error: no frames were extracted" >&2
   exit 1
 fi
 
+# ── Per-frame timestamps ───────────────────────────────────────────────────
+# Computed once, shared by filename embedding, burn-in, montage labels, --json.
+FRAME_FILES=()
+FRAME_TIMES=()
+if ! $AT_MODE; then
+  if [ -n "$INTERVAL" ]; then
+    STEP="$INTERVAL"
+  else
+    STEP=$(echo "$DURATION $EXTRACTED" | awk '{printf "%.4f", $1 / $2}')
+  fi
+fi
+i=0
+for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
+  if $AT_MODE; then
+    T="${AT_TIMES[$i]}"
+  elif $SCENE_MODE && [ -s "$SCENE_PTS_LOG" ]; then
+    # Read actual PTS from showinfo log (1-indexed line for 0-indexed i)
+    T=$(awk "NR==$((i + 1)){print \$1; exit}" "$SCENE_PTS_LOG")
+  else
+    T=$(echo "$i $STEP" | awk '{printf "%.2f", $1 * $2}')
+  fi
+  [ -z "$T" ] && T=0
+  # Embed the timestamp into the filename so frame→time mapping survives
+  # even when drawtext burn-in fails (missing font / no drawtext filter)
+  TS_SUFFIX=$(echo "$T" | awk '{s = $1; m = int(s / 60); r = s - m * 60;
+    if (r == int(r)) printf "t%dm%02ds", m, r; else printf "t%dm%04.1fs", m, r}')
+  NEW_FRAME="${frame%.jpg}_${TS_SUFFIX}.jpg"
+  mv -- "$frame" "$NEW_FRAME"
+  FRAME_FILES+=("$NEW_FRAME")
+  FRAME_TIMES+=("$T")
+  i=$((i + 1))
+done
+
 # ── Burn timestamps (#15: count and warn on failures) ─────────────────────
+TS_FAILURES=0
 if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
   echo -n "   Adding timestamps..."
   detect_font
@@ -426,50 +596,56 @@ if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
     DRAWTEXT_FONT=":fontfile='${ESCAPED_FONT}'"
   fi
 
-  # Build PTS lookup for scene mode (accurate timestamps from showinfo)
-  # For other modes, calculate evenly-spaced step
-  if $SCENE_MODE && [ -s "$SCENE_PTS_LOG" ]; then
-    USE_PTS=true
-  else
-    USE_PTS=false
-    if [ -n "$INTERVAL" ]; then
-      STEP="$INTERVAL"
-    else
-      STEP=$(echo "$DURATION $EXTRACTED" | awk '{printf "%.2f", $1 / $2}')
-    fi
+  # drawtext can be missing entirely (e.g. Homebrew ffmpeg 8 builds without
+  # freetype) — detect once, then fall back to ImageMagick annotate per frame
+  HAS_DRAWTEXT=false
+  if ffmpeg -hide_banner -filters 2>/dev/null | grep -q drawtext; then
+    HAS_DRAWTEXT=true
+  fi
+  IM_ANNOTATE=$(command -v magick || command -v convert || true)
+  IM_FONT=()
+  if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
+    IM_FONT=(-font "$DETECTED_FONT")
   fi
 
   i=0
-  TS_FAILURES=0
-  for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
-    if $USE_PTS; then
-      # Read actual PTS from showinfo log (1-indexed line for 0-indexed i)
-      SECS=$(awk "NR==$((i + 1)){printf \"%d\", \$1}" "$SCENE_PTS_LOG")
-      [ -z "$SECS" ] && SECS=0
-    else
-      SECS=$(echo "$i $STEP" | awk '{printf "%d", $1 * $2}')
-    fi
-    MINS=$((SECS / 60))
-    REMAINING=$((SECS % 60))
-    TS=$(printf "%d:%02d" "$MINS" "$REMAINING")
+  for frame in "${FRAME_FILES[@]}"; do
+    TS=$(format_ts "${FRAME_TIMES[$i]}")
+    BURNED=false
 
-    if ffmpeg -v error -y -i "$frame" \
-      -vf "drawtext=text='${TS}':x=8:y=h-24:fontsize=16:fontcolor=white:borderw=2:bordercolor=black${DRAWTEXT_FONT}" \
-      "${frame}.tmp.jpg" 2>"$STDERR_TMP" && [ -f "${frame}.tmp.jpg" ]; then
-      mv -- "${frame}.tmp.jpg" "$frame"
-    else
+    if $HAS_DRAWTEXT; then
+      if ffmpeg -v error -y -i "$frame" \
+        -vf "drawtext=text='${TS}':x=8:y=h-24:fontsize=16:fontcolor=white:borderw=2:bordercolor=black${DRAWTEXT_FONT}" \
+        "${frame}.tmp.jpg" 2>"$STDERR_TMP" && [ -s "${frame}.tmp.jpg" ]; then
+        mv -- "${frame}.tmp.jpg" "$frame"
+        BURNED=true
+      else
+        rm -f -- "${frame}.tmp.jpg"
+      fi
+    fi
+
+    if ! $BURNED && [ -n "$IM_ANNOTATE" ]; then
+      if "$IM_ANNOTATE" "$frame" "${IM_FONT[@]}" \
+        -gravity southwest -pointsize 16 -fill white -undercolor '#000000' \
+        -annotate +8+8 "$TS" \
+        "${frame}.tmp.jpg" 2>"$STDERR_TMP" && [ -s "${frame}.tmp.jpg" ]; then
+        mv -- "${frame}.tmp.jpg" "$frame"
+        BURNED=true
+      else
+        rm -f -- "${frame}.tmp.jpg"
+      fi
+    fi
+
+    if ! $BURNED; then
       TS_FAILURES=$((TS_FAILURES + 1))
-      rm -f -- "${frame}.tmp.jpg"
     fi
-
     i=$((i + 1))
   done
   if [ "$TS_FAILURES" -eq "$EXTRACTED" ]; then
     echo " FAILED (all ${TS_FAILURES} frames)" >&2
-    echo "   ⚠️  All timestamp burn-ins failed. Frames are saved without timestamps." >&2
-    echo "   Hint: install fonts or use --no-timestamps to suppress this warning." >&2
+    echo "   ⚠️  All timestamp burn-ins failed. Falling back to filename timestamps (and montage cell labels with --montage)." >&2
   elif [ "$TS_FAILURES" -gt 0 ]; then
-    echo " done (${TS_FAILURES}/${EXTRACTED} timestamp burn-in(s) failed)"
+    echo " done (${TS_FAILURES}/${EXTRACTED} timestamp burn-in(s) failed — montage will use cell labels)"
   else
     echo " done"
   fi
@@ -480,14 +656,19 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   echo -n "   Creating montage..."
 
   # Calculate grid: aim for a reasonable final image aspect ratio (#8: awk instead of bc)
-  if [ "$ORIENTATION" = "portrait" ]; then
-    # Portrait frames: more columns to fill horizontal space
-    COLS=$(echo "$EXTRACTED" | awk '{printf "%d", sqrt($1 * 2)}')
+  if [ -n "$COLS_OPT" ]; then
+    COLS="$COLS_OPT"
+    [ "$COLS" -gt "$EXTRACTED" ] && COLS="$EXTRACTED"
   else
-    # Landscape frames: standard 16:9-ish grid
-    COLS=$(echo "$EXTRACTED" | awk '{printf "%d", sqrt($1 * 16 / 9)}')
+    if [ "$ORIENTATION" = "portrait" ]; then
+      # Portrait frames: more columns to fill horizontal space
+      COLS=$(echo "$EXTRACTED" | awk '{printf "%d", sqrt($1 * 2)}')
+    else
+      # Landscape frames: standard 16:9-ish grid
+      COLS=$(echo "$EXTRACTED" | awk '{printf "%d", sqrt($1 * 16 / 9)}')
+    fi
+    [ "$COLS" -lt 2 ] && COLS=2
   fi
-  [ "$COLS" -lt 2 ] && COLS=2
   ROWS=$(( (EXTRACTED + COLS - 1) / COLS ))
 
   TILE="${COLS}x${ROWS}"
@@ -505,26 +686,44 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     fi
   }
 
+  # Fallback for failed burn-ins: render timestamps as labels under each cell
+  USE_LABELS=false
+  if $TIMESTAMPS && [ "$TS_FAILURES" -gt 0 ]; then
+    USE_LABELS=true
+  fi
+  MONTAGE_INPUTS=()
+  i=0
+  for frame in "${FRAME_FILES[@]}"; do
+    if $USE_LABELS; then
+      MONTAGE_INPUTS+=(-label "$(format_ts "${FRAME_TIMES[$i]}")" "$frame")
+    else
+      MONTAGE_INPUTS+=("$frame")
+    fi
+    i=$((i + 1))
+  done
+
+  # -fill white keeps fallback labels readable on the dark background
+  MONTAGE_OPTS=(-fill white -tile "$TILE" -geometry "${W_OUT}x${H_OUT}+4+4" -background '#0e0e1a' -quality "$Q")
+
   MONTAGE_OK=false
-  if run_montage "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg \
-    -tile "$TILE" \
-    -geometry "${W_OUT}x${H_OUT}+4+4" \
-    -background '#0e0e1a' \
-    -quality "$Q" \
-    "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+  LABELS_DROPPED=false
+  if run_montage "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
     MONTAGE_OK=true
   elif [ -z "$DETECTED_FONT" ]; then
     # First attempt failed without a font — try forcing font detection and retry
     detect_font
     if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
-      if montage -font "$DETECTED_FONT" "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg \
-        -tile "$TILE" \
-        -geometry "${W_OUT}x${H_OUT}+4+4" \
-        -background '#0e0e1a' \
-        -quality "$Q" \
-        "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+      if montage -font "$DETECTED_FONT" "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
         MONTAGE_OK=true
       fi
+    fi
+  fi
+  if ! $MONTAGE_OK && $USE_LABELS; then
+    # Labels also need a working font — last resort: montage without labels
+    # (frame→time mapping is still preserved in the filenames)
+    if run_montage "${FRAME_FILES[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+      MONTAGE_OK=true
+      LABELS_DROPPED=true
     fi
   fi
 
@@ -546,12 +745,16 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
 
   MONTAGE_SIZE=$(du -h "$MONTAGE_FILE" | cut -f1 | tr -d ' ')
   echo " done"
+  if $LABELS_DROPPED; then
+    echo "   ⚠️  Timestamp labels failed; montage created without them (timestamps remain in frame filenames)." >&2
+  fi
   echo ""
   echo "   📊 Montage: ${BASENAME}_montage_${RUN_ID}.jpg (${TILE} grid, ${MONTAGE_SIZE})"
 
   # (#6) Only delete this run's prefixed frames
   if $CLEANUP; then
     rm -f -- "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg
+    CLEANED=true
     echo "   🧹 Individual frames removed"
   fi
 else
@@ -568,3 +771,5 @@ if $MONTAGE; then
   echo "   💡 Feed to AI:"
   echo "   Read(\"${MONTAGE_PATH}\")"
 fi
+
+emit_json

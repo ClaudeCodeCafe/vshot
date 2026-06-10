@@ -70,6 +70,8 @@ Then use directly:
 /vshot:setup
 ```
 
+`/vshot:setup` can also install a `vshot` shim into `~/.local/bin` so the CLI works from any shell — the shim resolves the latest installed plugin version at runtime, so it survives plugin updates.
+
 ### Option C: Manual
 
 ```bash
@@ -111,6 +113,15 @@ vshot video.mp4 --scene --montage
 
 # Stricter scene detection (fewer frames)
 vshot video.mp4 --scene 0.5 --montage
+
+# Pinpoint extraction — re-examine specific moments (seconds, decimals OK)
+vshot video.mp4 --at 3.5,12,48 --mode detail --montage
+
+# Fixed grid columns (useful for portrait videos)
+vshot video.mp4 --montage --cols 4
+
+# Machine-readable result for pipelines
+vshot video.mp4 --montage --cleanup --json | jq -r .montage
 ```
 
 ### Options
@@ -122,9 +133,12 @@ vshot video.mp4 --scene 0.5 --montage
 | `--frames N` | Number of frames | 20 |
 | `--interval N` | Extract every N seconds | — |
 | `--scene [N]` | Extract only scene-change frames (0.0-1.0) | 0.3 |
+| `--at LIST` | Extract at specific times in seconds (e.g. `3.5,12,48`) | — |
+| `--cols N` | Montage grid columns | auto |
 | `--output DIR` | Custom output directory | `<video>_vshot/` |
 | `--cleanup` | Remove frames after montage | off |
 | `--no-timestamps` | Skip timestamp overlay | — |
+| `--json` | Print JSON result line to stdout (progress → stderr) | off |
 
 ## Scene Detection
 
@@ -146,6 +160,36 @@ vshot video.mp4 --scene 0.5 --montage
 </table>
 
 Same video. Fewer frames. Zero redundancy.
+
+## Timestamps That Never Disappear
+
+Frame→time mapping survives even on minimal setups, via a three-level fallback:
+
+1. **Burn-in** — ffmpeg `drawtext` overlays `M:SS` on each frame
+2. **ImageMagick annotate** — used automatically when `drawtext` is unavailable (e.g. Homebrew ffmpeg builds without freetype)
+3. **Filenames + montage labels** — every frame filename embeds its timestamp (`frame_0003_t0m12s.jpg`); if both burn-ins fail, the montage renders timestamps as labels under each cell
+
+## Machine-Readable Output
+
+`--json` keeps human-readable progress on stderr and prints one JSON line to stdout:
+
+```bash
+vshot video.mp4 --montage --cleanup --json | jq
+```
+
+```json
+{
+  "video": "video.mp4",
+  "duration": 62.3,
+  "mode": "overview",
+  "frames": 12,
+  "output_dir": "/abs/path/video_vshot",
+  "montage": "/abs/path/video_vshot/video_montage_123_456.jpg",
+  "files": [{"path": "...frame_0001_t0m00s.jpg", "time": 0.00}]
+}
+```
+
+No more globbing for `*_montage_*.jpg` in pipelines — `jq -r .montage` and done.
 
 ## Token Efficiency
 

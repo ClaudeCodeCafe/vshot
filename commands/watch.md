@@ -26,10 +26,10 @@ And stop.
 3. Run vshot to create a montage:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/vshot" "$VIDEO_PATH" --montage --cleanup --mode "$MODE" --frames "$FRAMES"
+"${CLAUDE_PLUGIN_ROOT}/vshot" "$VIDEO_PATH" --montage --cleanup --mode "$MODE" --frames "$FRAMES" --json
 ```
 
-4. Find the generated montage file:
+4. stdout contains a single JSON line. Take the montage path from its `montage` field (human-readable progress goes to stderr). Fallback if JSON parsing fails:
 
 ```bash
 ls -t "${VIDEO_PATH%.*}_vshot/"*_montage_*.jpg | head -1
@@ -42,5 +42,11 @@ ls -t "${VIDEO_PATH%.*}_vshot/"*_montage_*.jpg | head -1
    - Note any text, UI elements, or visual content visible
    - If it appears to be a CCC (Claude Code Cafe) video, comment on the layout, MeiMei character, terminal content
    - Provide constructive feedback if the user seems to be reviewing the video
+
+7. If specific moments need a closer look (suspicious frames, unreadable text), re-extract just those times at higher resolution:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/vshot" "$VIDEO_PATH" --at 3.5,12,48 --mode detail --montage --cleanup --json
+```
 
 Keep your analysis concise but thorough. Focus on what's actually visible in the frames.
