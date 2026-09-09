@@ -114,11 +114,15 @@ vshot video.mp4 --scene --montage
 # Stricter scene detection (fewer frames)
 vshot video.mp4 --scene 0.5 --montage
 
-# Pinpoint extraction — re-examine specific moments (seconds, decimals OK)
+# Pinpoint extraction — re-examine specific moments (seconds, decimals OK;
+# fractional times are labelled with one decimal, e.g. 0:03.5)
 vshot video.mp4 --at 3.5,12,48 --mode detail --montage
 
 # Fixed grid columns (useful for portrait videos)
 vshot video.mp4 --montage --cols 4
+
+# Stable montage file name for pipelines (re-runs overwrite it)
+vshot video.mp4 --at 3.5,12,48 --montage --name review
 
 # Machine-readable result for pipelines
 vshot video.mp4 --montage --cleanup --json | jq -r .montage
@@ -135,6 +139,7 @@ vshot video.mp4 --montage --cleanup --json | jq -r .montage
 | `--scene [N]` | Extract only scene-change frames (0.0-1.0) | 0.3 |
 | `--at LIST` | Extract at specific times in seconds (e.g. `3.5,12,48`) | — |
 | `--cols N` | Montage grid columns | auto |
+| `--name NAME` | Montage file name (no directory, `.jpg` added) — stable names for pipelines | `<video>_montage_<run-id>.jpg` |
 | `--output DIR` | Custom output directory | `<video>_vshot/` |
 | `--cleanup` | Remove frames after montage | off |
 | `--no-timestamps` | Skip timestamp overlay | — |

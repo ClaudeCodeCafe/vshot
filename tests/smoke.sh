@@ -220,6 +220,23 @@ assert "--at + montage" "$VSHOT" "$VIDEO" --at 0.5,1.5,2.5 --montage --output "$
 assert_count "at montage exists" "${TMPDIR_TEST}/at_montage" "*_montage_*.jpg" 1
 
 echo ""
+echo "── Montage file name (--name) ──"
+NAME_DIR="${TMPDIR_TEST}/name"
+assert "--name montage" "$VSHOT" "$VIDEO" --montage --frames 3 --name review --output "$NAME_DIR"
+assert_count "named montage exists" "$NAME_DIR" "review.jpg" 1
+assert_count "no random-suffixed montage" "$NAME_DIR" "*_montage_*.jpg" 0
+assert "--name accepts .jpg suffix" "$VSHOT" "$VIDEO" --montage --frames 3 --name review.jpg --output "$NAME_DIR"
+assert_count "still one named montage after re-run" "$NAME_DIR" "review.jpg" 1
+assert_fail "--name rejects path separators" "$VSHOT" "$VIDEO" --montage --frames 3 --name ../evil --output "$NAME_DIR"
+
+echo ""
+echo "── Timestamp labels keep decimals ──"
+TS_DIR="${TMPDIR_TEST}/ts_decimal"
+assert "--at fractional extraction" "$VSHOT" "$VIDEO" --at 0.5,1 --output "$TS_DIR"
+assert_count "fractional filename suffix" "$TS_DIR" "vshot_*_t0m00.5s.jpg" 1
+assert_count "integer filename suffix" "$TS_DIR" "vshot_*_t0m01s.jpg" 1
+
+echo ""
 echo "── Montage columns (--cols) ──"
 COLS_DIR="${TMPDIR_TEST}/cols"
 assert "--cols 2 montage" "$VSHOT" "$VIDEO" --montage --cols 2 --frames 3 --output "$COLS_DIR"
