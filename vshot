@@ -19,6 +19,7 @@ INTERVAL=""
 MONTAGE=false
 OUTPUT_DIR=""
 TIMESTAMPS=true
+NAME=""
 CLEANUP=false
 SCENE=""
 AT=""
@@ -45,6 +46,8 @@ OPTIONS:
   --mode MODE       overview | text | detail (default: overview)
   --montage         Combine all frames into a single grid image
   --cols N          Number of montage grid columns (default: auto from aspect ratio)
+  --name NAME       Montage file name, without directory (default: <video>_montage_<run-id>.jpg)
+                    Stable names make pipelines simpler; re-runs overwrite the file.
   --output DIR      Output directory (default: <video>_vshot/)
   --no-timestamps   Don't burn timestamps into extracted frames
   --cleanup         Remove individual frames after creating montage
@@ -65,7 +68,8 @@ EXAMPLES:
   ${SCRIPT_NAME} video.mp4 --frames 30 --mode detail # 30 high-res frames
   ${SCRIPT_NAME} video.mp4 --scene --montage         # scene changes only
   ${SCRIPT_NAME} video.mp4 --scene 0.5 --montage     # fewer scene changes
-  ${SCRIPT_NAME} video.mp4 --at 3.5,12,48 --montage  # pinpoint extraction
+  ${SCRIPT_NAME} video.mp4 --at 3.5,12,48 --montage  # pinpoint extraction (labels keep decimals: 0:03.5)
+  ${SCRIPT_NAME} video.mp4 --montage --name review    # fixed file name: review.jpg
   ${SCRIPT_NAME} video.mp4 --montage --json          # machine-readable result
 EOF
   exit 0
@@ -106,9 +110,12 @@ is_positive_integer() {
   esac
 }
 
-# Format seconds (int or float) as M:SS for display
+# Format seconds (int or float) as M:SS for display.
+# Fractional input (e.g. --at 3.5) keeps one decimal — M:SS.d — so two
+# pinpoint frames inside the same second stay distinguishable in the montage.
 format_ts() {
-  echo "$1" | awk '{s = int($1); printf "%d:%02d", int(s / 60), s % 60}'
+  echo "$1" | awk '{s = $1 + 0; m = int(s / 60); r = s - m * 60;
+    if (r == int(r)) printf "%d:%02d", m, r; else printf "%d:%04.1f", m, r}'
 }
 
 # ── JSON result output (--json) ────────────────────────────────────────────
@@ -215,6 +222,11 @@ while [ $# -gt 0 ]; do
         echo "Error: --cols requires a value" >&2; exit 1
       fi
       COLS_OPT="$2"; shift 2 ;;
+    --name)
+      if [ $# -lt 2 ]; then
+        echo "Error: --name requires a value" >&2; exit 1
+      fi
+      NAME="$2"; shift 2 ;;
     --json) JSON=true; shift ;;
     --no-timestamps) TIMESTAMPS=false; shift ;;
     --cleanup) CLEANUP=true; shift ;;
@@ -230,6 +242,12 @@ while [ $# -gt 0 ]; do
 done
 
 # ── Input validation (#2) ─────────────────────────────────────────────────
+if [ -n "$NAME" ]; then
+  case "$NAME" in
+    */*|.|..) echo "Error: --name must be a plain file name (no path separators)" >&2; exit 1 ;;
+  esac
+  NAME="${NAME%.jpg}"
+fi
 if [ -z "$VIDEO" ]; then
   echo "Error: no video file specified" >&2
   echo "Usage: ${SCRIPT_NAME} <video> [options]" >&2
@@ -672,7 +690,12 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   ROWS=$(( (EXTRACTED + COLS - 1) / COLS ))
 
   TILE="${COLS}x${ROWS}"
-  MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
+  if [ -n "$NAME" ]; then
+    # --name: stable, caller-chosen montage file name (overwrites on re-run)
+    MONTAGE_FILE="${OUTPUT_DIR}/${NAME}.jpg"
+  else
+    MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
+  fi
 
   # Use shared font detection for montage
   detect_font
