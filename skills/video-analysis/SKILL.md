@@ -12,22 +12,27 @@ When you encounter a video file path (.mp4, .mov, .webm, .avi) and the user want
 
 ## Steps
 
-1. Run vshot to create a montage:
+1. Run vshot to create a montage (pick `--mode` / `--frames` from the guide below):
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/vshot" "<video-path>" --montage --cleanup --mode text --frames 16
+"${CLAUDE_PLUGIN_ROOT}/vshot" "<video-path>" --montage --cleanup --mode text --frames 16 --json
 ```
 
-2. Read the generated montage:
+2. stdout is a single JSON line (human-readable progress goes to stderr). Take the montage path from its `montage` field. Fallback only if JSON parsing fails:
 
 ```bash
-# Find the montage
 ls -t "<video-path-without-extension>_vshot/"*_montage_*.jpg | head -1
 ```
 
 Then use the `Read` tool on the montage image.
 
 3. Analyze what you see and respond to the user's question.
+
+4. If specific moments need a closer look (unreadable text, suspicious frames), re-extract just those times at higher resolution and read the new montage:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/vshot" "<video-path>" --at 3.5,12,48 --mode detail --montage --cleanup --json
+```
 
 ## Mode selection guide
 
