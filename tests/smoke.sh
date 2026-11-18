@@ -93,6 +93,24 @@ echo "── Frame extraction ──"
 FRAMES_DIR="${TMPDIR_TEST}/frames"
 assert "extract 3 frames" "$VSHOT" "$VIDEO" --frames 3 --output "$FRAMES_DIR"
 assert_count "exactly 3 frames" "$FRAMES_DIR" "vshot_*_frame_*.jpg" 3
+# Default mode seeks to i * D / N — first frame at t=0, labels unchanged (#10)
+assert_count "frame 1 at 0s" "$FRAMES_DIR" "vshot_*_frame_0001_t0m00s.jpg" 1
+assert_count "frame 2 at 1s" "$FRAMES_DIR" "vshot_*_frame_0002_t0m01s.jpg" 1
+assert_count "frame 3 at 2s" "$FRAMES_DIR" "vshot_*_frame_0003_t0m02s.jpg" 1
+
+# Container longer than the video stream (audio tail): times past the last
+# video frame are skipped, remaining frames keep their own timestamps (#10)
+TAIL_VIDEO="${TMPDIR_TEST}/tail.mp4"
+if ffmpeg -v error -f lavfi -i "color=c=blue:s=320x180:d=2" -f lavfi -i "sine=d=4" \
+  -c:v mpeg4 -c:a aac -y "$TAIL_VIDEO" 2>/dev/null; then
+  TAIL_DIR="${TMPDIR_TEST}/tail"
+  assert "audio-longer video extracts" "$VSHOT" "$TAIL_VIDEO" --frames 4 --output "$TAIL_DIR"
+  assert_count "tail: 2 frames kept" "$TAIL_DIR" "vshot_*_frame_*.jpg" 2
+  assert_count "tail: frame 1 at 0s" "$TAIL_DIR" "vshot_*_frame_0001_t0m00s.jpg" 1
+  assert_count "tail: frame 2 at 1s" "$TAIL_DIR" "vshot_*_frame_0002_t0m01s.jpg" 1
+else
+  echo "  ⚠️  audio-longer video: could not generate test clip, skipping"
+fi
 
 echo ""
 echo "── Montage ──"
@@ -243,6 +261,14 @@ if echo "$JSON_OUT" | grep -q '"files":\[{"path":'; then
   PASS=$((PASS + 1))
 else
   echo "  ❌ --json files list missing: $JSON_OUT"
+  FAIL=$((FAIL + 1))
+fi
+JSON_TIMES=$(echo "$JSON_OUT" | grep -o '"time":[0-9.]*' | tr '\n' ' ')
+if [ "$JSON_TIMES" = '"time":0.00 "time":1.50 ' ]; then
+  echo "  ✅ --json times match even spacing (0.00, 1.50)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --json times unexpected: $JSON_TIMES"
   FAIL=$((FAIL + 1))
 fi
 if command -v python3 >/dev/null 2>&1; then
