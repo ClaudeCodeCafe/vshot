@@ -449,11 +449,16 @@ echo ""
 echo -n "   Extracting frames..."
 
 # (#3) Capture stderr, check exit code
-# Scene mode needs -vsync vfr and yuvj420p for JPEG compatibility
+# Scene mode needs variable frame rate output and yuvj420p for JPEG compatibility
 EXTRA_OPTS=""
 FFMPEG_LOGLEVEL="error"
 if $SCENE_MODE; then
-  EXTRA_OPTS="-vsync vfr -pix_fmt yuvj420p"
+  # -fps_mode replaced -vsync (ffmpeg 5.1+); ffmpeg 9 removed -vsync entirely
+  if ffmpeg -hide_banner -h full 2>/dev/null | grep -q -- '-fps_mode'; then
+    EXTRA_OPTS="-fps_mode vfr -pix_fmt yuvj420p"
+  else
+    EXTRA_OPTS="-vsync vfr -pix_fmt yuvj420p"
+  fi
   # Use info level to capture showinfo PTS data for accurate timestamps
   FFMPEG_LOGLEVEL="info"
 fi
