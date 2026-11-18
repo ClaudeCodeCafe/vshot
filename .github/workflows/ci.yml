@@ -38,3 +38,9 @@ jobs:
         run: /bin/bash --version | head -1
       - name: Run smoke tests with /bin/bash (3.2)
         run: /bin/bash tests/smoke.sh
+      - name: Debug scene mode (temporary)
+        if: failure()
+        run: |
+          ffmpeg -version | head -1
+          ffmpeg -v error -f lavfi -i "color=c=red:s=320x180:d=2[r];color=c=blue:s=320x180:d=2[b];[r][b]concat=n=2:v=1:a=0" -c:v libx264 -t 4 -y /tmp/s.mp4; echo "gen exit=$?"; ls -la /tmp/s.mp4
+          /bin/bash -x ./vshot /tmp/s.mp4 --scene --output /tmp/so 2>&1 | tail -40
