@@ -185,6 +185,50 @@ else
 fi
 
 echo ""
+echo "── Scene frame cap (--max-frames) ──"
+# 60 s video with a hard cut every second → 59 scene changes, the Nth at N s
+CUTS_VIDEO="${TMPDIR_TEST}/cuts.mp4"
+CUTS_SRC="nullsrc=s=640x360:r=10:d=60,geq=lum='if(mod(floor(T),2),230,20)':cb=128:cr=128"
+ffmpeg -v error -f lavfi -i "$CUTS_SRC" -c:v libx264 -pix_fmt yuv420p -y "$CUTS_VIDEO" 2>/dev/null || \
+  ffmpeg -v error -f lavfi -i "$CUTS_SRC" -c:v mpeg4 -pix_fmt yuv420p -y "$CUTS_VIDEO" 2>/dev/null
+
+# Each kept frame's original index (scene N = cut at N s) must match the
+# timestamp in its filename, and timestamps must strictly increase
+check_cut_timestamps() {
+  local dir="$1" prev=-1 f idx secs
+  for f in "$dir"/vshot_*_frame_*_t*.jpg; do
+    [ -f "$f" ] || return 1
+    idx="${f##*_frame_}"
+    idx=$((10#${idx%%_t*}))
+    secs=$(echo "$f" | sed 's/.*_t\([0-9]*\)m\([0-9.]*\)s\.jpg$/\1 \2/' | awk '{printf "%d", $1 * 60 + $2}')
+    [ "$idx" -eq "$secs" ] || return 1
+    [ "$secs" -gt "$prev" ] || return 1
+    prev=$secs
+  done
+}
+
+CAP_DEFAULT_DIR="${TMPDIR_TEST}/cap_default"
+CAP_ERR=$("$VSHOT" "$CUTS_VIDEO" --scene --output "$CAP_DEFAULT_DIR" 2>&1 >/dev/null)
+assert_count "default cap: 30 frames" "$CAP_DEFAULT_DIR" "vshot_*_frame_*.jpg" 30
+if echo "$CAP_ERR" | grep -q "59 scene changes detected"; then
+  echo "  ✅ cap warning on stderr reports original count"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ cap warning missing: $CAP_ERR"
+  FAIL=$((FAIL + 1))
+fi
+assert "default cap: timestamps aligned and increasing" check_cut_timestamps "$CAP_DEFAULT_DIR"
+
+CAP_DIR="${TMPDIR_TEST}/cap"
+assert "--max-frames 5 + montage" "$VSHOT" "$CUTS_VIDEO" --scene --max-frames 5 --montage --output "$CAP_DIR"
+assert_count "--max-frames 5: 5 frames" "$CAP_DIR" "vshot_*_frame_*.jpg" 5
+assert "--max-frames 5: timestamps aligned and increasing" check_cut_timestamps "$CAP_DIR"
+assert_count "--max-frames 5: montage exists" "$CAP_DIR" "*_montage_*.jpg" 1
+
+assert_fail "invalid --max-frames 0 errors" "$VSHOT" "$CUTS_VIDEO" --scene --max-frames 0
+assert_fail "invalid --max-frames abc errors" "$VSHOT" "$CUTS_VIDEO" --scene --max-frames abc
+
+echo ""
 echo "── Cleanup isolation (#7) ──"
 # Run twice into same dir, verify cleanup only removes current run's frames
 ISOLATION_DIR="${TMPDIR_TEST}/isolation"
