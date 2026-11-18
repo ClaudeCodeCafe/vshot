@@ -710,8 +710,11 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     i=$((i + 1))
   done
 
-  # -fill white keeps fallback labels readable on the dark background
-  MONTAGE_OPTS=(-fill white -tile "$TILE" -geometry "${W_OUT}x${H_OUT}+4+4" -background '#0e0e1a' -quality "$Q")
+  # -fill white keeps labels readable on the dark background; scale the
+  # label size with the cell width so it survives downscaling of wide grids
+  LABEL_PT=$(( W_OUT / 24 ))
+  [ "$LABEL_PT" -lt 16 ] && LABEL_PT=16
+  MONTAGE_OPTS=(-fill white -pointsize "$LABEL_PT" -tile "$TILE" -geometry "${W_OUT}x${H_OUT}+4+4" -background '#0e0e1a' -quality "$Q")
 
   MONTAGE_OK=false
   LABELS_DROPPED=false
@@ -760,7 +763,11 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   echo "   📊 Montage: ${BASENAME}_montage_${RUN_ID}.jpg (${TILE} grid, ${MONTAGE_SIZE})"
 
   # (#6) Only delete this run's prefixed frames
-  if $CLEANUP; then
+  # (#11) Keep them if labels were dropped: filenames are then the only
+  # remaining frame→time mapping
+  if $CLEANUP && $LABELS_DROPPED; then
+    echo "   ⚠️  --cleanup skipped: individual frames kept to preserve timestamps." >&2
+  elif $CLEANUP; then
     rm -f -- "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg
     CLEANED=true
     echo "   🧹 Individual frames removed"

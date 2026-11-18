@@ -165,6 +165,7 @@ SHIM
     FAIL=$((FAIL + 1))
   fi
   assert_count "label fallback: montage exists" "${TMPDIR_TEST}/lbl_fail" "*_montage_*.jpg" 1
+  assert_count "label fallback: frames kept despite --cleanup" "${TMPDIR_TEST}/lbl_fail" "vshot_*_frame_*_t*.jpg" 3
 fi
 
 echo ""
