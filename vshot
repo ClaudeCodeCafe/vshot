@@ -23,6 +23,8 @@ CLEANUP=false
 SCENE=""
 AT=""
 COLS_OPT=""
+NAME=""
+NAME_SET=false
 JSON=false
 CLEANED=false
 
@@ -45,6 +47,8 @@ OPTIONS:
   --mode MODE       overview | text | detail (default: overview)
   --montage         Combine all frames into a single grid image
   --cols N          Number of montage grid columns (default: auto from aspect ratio)
+  --name NAME       Write the montage as <output>/NAME.jpg, overwriting any existing
+                    file (requires --montage; a trailing .jpg/.jpeg is stripped)
   --output DIR      Output directory (default: <video>_vshot/)
   --no-timestamps   Don't burn timestamps into extracted frames
   --cleanup         Remove individual frames after creating montage
@@ -67,6 +71,7 @@ EXAMPLES:
   ${SCRIPT_NAME} video.mp4 --scene 0.5 --montage     # fewer scene changes
   ${SCRIPT_NAME} video.mp4 --at 3.5,12,48 --montage  # pinpoint extraction
   ${SCRIPT_NAME} video.mp4 --montage --json          # machine-readable result
+  ${SCRIPT_NAME} video.mp4 --montage --name review   # stable name: review.jpg
 EOF
   exit 0
 }
@@ -215,6 +220,11 @@ while [ $# -gt 0 ]; do
         echo "Error: --cols requires a value" >&2; exit 1
       fi
       COLS_OPT="$2"; shift 2 ;;
+    --name)
+      if [ $# -lt 2 ]; then
+        echo "Error: --name requires a value" >&2; exit 1
+      fi
+      NAME="$2"; NAME_SET=true; shift 2 ;;
     --json) JSON=true; shift ;;
     --no-timestamps) TIMESTAMPS=false; shift ;;
     --cleanup) CLEANUP=true; shift ;;
@@ -256,6 +266,25 @@ fi
 if [ -n "$COLS_OPT" ] && ! is_positive_integer "$COLS_OPT"; then
   echo "Error: --cols must be a positive integer, got '$COLS_OPT'" >&2
   exit 1
+fi
+
+if $NAME_SET; then
+  if ! $MONTAGE; then
+    echo "Error: --name only applies to the montage; add --montage" >&2
+    exit 1
+  fi
+  case "$NAME" in
+    */*) echo "Error: --name must be a file name without '/', got '$NAME'" >&2; exit 1 ;;
+  esac
+  # Strip a trailing .jpg/.jpeg (any case); vshot always appends .jpg
+  case "$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]')" in
+    *.jpg) NAME="${NAME%????}" ;;
+    *.jpeg) NAME="${NAME%?????}" ;;
+  esac
+  if [ -z "$NAME" ]; then
+    echo "Error: --name must not be empty (or only an extension)" >&2
+    exit 1
+  fi
 fi
 
 # Parse --at into a validated list (range check happens after duration probe)
@@ -672,7 +701,13 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   ROWS=$(( (EXTRACTED + COLS - 1) / COLS ))
 
   TILE="${COLS}x${ROWS}"
-  MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
+  if $NAME_SET; then
+    MONTAGE_FILE="${OUTPUT_DIR}/${NAME}.jpg"
+  else
+    MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
+  fi
+  # Remove any previous file so a stale montage can't pass as this run's result
+  rm -f -- "$MONTAGE_FILE"
 
   # Use shared font detection for montage
   detect_font
@@ -749,7 +784,7 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     echo "   ⚠️  Timestamp labels failed; montage created without them (timestamps remain in frame filenames)." >&2
   fi
   echo ""
-  echo "   📊 Montage: ${BASENAME}_montage_${RUN_ID}.jpg (${TILE} grid, ${MONTAGE_SIZE})"
+  echo "   📊 Montage: $(basename -- "$MONTAGE_FILE") (${TILE} grid, ${MONTAGE_SIZE})"
 
   # (#6) Only delete this run's prefixed frames
   if $CLEANUP; then
@@ -765,8 +800,8 @@ fi
 TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" | cut -f1 | tr -d ' ')
 echo "   📁 Total: ${TOTAL_SIZE} → ${OUTPUT_DIR}/"
 
-if $MONTAGE; then
-  MONTAGE_PATH="$(cd -- "$OUTPUT_DIR" && pwd)/${BASENAME}_montage_${RUN_ID}.jpg"
+if $MONTAGE && [ -n "${MONTAGE_FILE:-}" ]; then
+  MONTAGE_PATH="$(cd -- "$OUTPUT_DIR" && pwd)/$(basename -- "$MONTAGE_FILE")"
   echo ""
   echo "   💡 Feed to AI:"
   echo "   Read(\"${MONTAGE_PATH}\")"
