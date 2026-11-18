@@ -23,6 +23,7 @@ CLEANUP=false
 SCENE=""
 AT=""
 COLS_OPT=""
+MAX_EDGE=2576
 JSON=false
 CLEANED=false
 
@@ -45,6 +46,8 @@ OPTIONS:
   --mode MODE       overview | text | detail (default: overview)
   --montage         Combine all frames into a single grid image
   --cols N          Number of montage grid columns (default: auto from aspect ratio)
+  --max-edge N      Shrink montage cells so the montage long edge fits N px
+                    (default: 2576, Claude's image limit; 0 disables)
   --output DIR      Output directory (default: <video>_vshot/)
   --no-timestamps   Don't burn timestamps into extracted frames
   --cleanup         Remove individual frames after creating montage
@@ -119,7 +122,7 @@ json_escape() {
 # Emit one JSON line to fd 3 (the original stdout). No-op without --json.
 emit_json() {
   $JSON || return 0
-  local out_abs files_json montage_json i fpath
+  local out_abs files_json montage_json cell_json i fpath
   out_abs=$(cd -- "$OUTPUT_DIR" 2>/dev/null && pwd)
   [ -z "$out_abs" ] && out_abs="$OUTPUT_DIR"
   files_json=""
@@ -133,12 +136,15 @@ emit_json() {
   fi
   if [ -n "${MONTAGE_FILE:-}" ] && [ -s "${MONTAGE_FILE:-}" ]; then
     montage_json="\"$(json_escape "${out_abs}/$(basename -- "$MONTAGE_FILE")")\""
+    cell_json="\"${CELL_W}x${CELL_H}\""
   else
     montage_json="null"
+    cell_json="null"
   fi
-  printf '{"video":"%s","duration":%s,"mode":"%s","frames":%s,"output_dir":"%s","montage":%s,"files":[%s]}\n' \
+  printf '{"video":"%s","duration":%s,"mode":"%s","frames":%s,"output_dir":"%s","montage":%s,"files":[%s],"montage_cell":%s,"montage_shrunk":%s}\n' \
     "$(json_escape "$VIDEO")" "$DURATION" "$MODE" "${EXTRACTED:-0}" \
-    "$(json_escape "$out_abs")" "$montage_json" "$files_json" >&3
+    "$(json_escape "$out_abs")" "$montage_json" "$files_json" \
+    "$cell_json" "${CELL_SHRUNK:-false}" >&3
 }
 
 # ── Font detection (shared by timestamp burn-in and montage) ──────────────
@@ -215,6 +221,11 @@ while [ $# -gt 0 ]; do
         echo "Error: --cols requires a value" >&2; exit 1
       fi
       COLS_OPT="$2"; shift 2 ;;
+    --max-edge)
+      if [ $# -lt 2 ]; then
+        echo "Error: --max-edge requires a value" >&2; exit 1
+      fi
+      MAX_EDGE="$2"; shift 2 ;;
     --json) JSON=true; shift ;;
     --no-timestamps) TIMESTAMPS=false; shift ;;
     --cleanup) CLEANUP=true; shift ;;
@@ -257,6 +268,12 @@ if [ -n "$COLS_OPT" ] && ! is_positive_integer "$COLS_OPT"; then
   echo "Error: --cols must be a positive integer, got '$COLS_OPT'" >&2
   exit 1
 fi
+
+case "$MAX_EDGE" in
+  ''|*[!0-9]*)
+    echo "Error: --max-edge must be a non-negative integer, got '$MAX_EDGE'" >&2
+    exit 1 ;;
+esac
 
 # Parse --at into a validated list (range check happens after duration probe)
 AT_MODE=false
@@ -702,8 +719,36 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     i=$((i + 1))
   done
 
+  # Fit the montage long edge within --max-edge (#3): Claude's Read tool
+  # downscales larger images anyway, so shrink cells instead of wasting pixels.
+  # Each cell is (W+8)x(H+8) with the +4+4 border; reserve ~24px per row for
+  # fallback labels. Extracted frames keep the full mode resolution.
+  CELL_W=$W_OUT
+  CELL_H=$H_OUT
+  CELL_SHRUNK=false
+  if [ "$MAX_EDGE" -gt 0 ]; then
+    LABEL_H=0
+    $USE_LABELS && LABEL_H=24
+    FIT_W=$(( MAX_EDGE / COLS - 8 ))
+    FIT_H=$(( MAX_EDGE / ROWS - 8 - LABEL_H ))
+    if [ "$CELL_W" -gt "$FIT_W" ]; then
+      CELL_H=$(( CELL_H * FIT_W / CELL_W ))
+      CELL_W=$FIT_W
+    fi
+    if [ "$CELL_H" -gt "$FIT_H" ]; then
+      CELL_W=$(( CELL_W * FIT_H / CELL_H ))
+      CELL_H=$FIT_H
+    fi
+    # Geometry <= 0 would mean "no resize" to ImageMagick
+    [ "$CELL_W" -lt 2 ] && CELL_W=2
+    [ "$CELL_H" -lt 2 ] && CELL_H=2
+    if [ "$CELL_W" -ne "$W_OUT" ] || [ "$CELL_H" -ne "$H_OUT" ]; then
+      CELL_SHRUNK=true
+    fi
+  fi
+
   # -fill white keeps fallback labels readable on the dark background
-  MONTAGE_OPTS=(-fill white -tile "$TILE" -geometry "${W_OUT}x${H_OUT}+4+4" -background '#0e0e1a' -quality "$Q")
+  MONTAGE_OPTS=(-fill white -tile "$TILE" -geometry "${CELL_W}x${CELL_H}+4+4" -background '#0e0e1a' -quality "$Q")
 
   MONTAGE_OK=false
   LABELS_DROPPED=false
@@ -747,6 +792,10 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   echo " done"
   if $LABELS_DROPPED; then
     echo "   ⚠️  Timestamp labels failed; montage created without them (timestamps remain in frame filenames)." >&2
+  fi
+  if $CELL_SHRUNK; then
+    echo "   ℹ️  Montage cells shrunk to ${CELL_W}x${CELL_H} (from ${W_OUT}x${H_OUT}) to fit --max-edge ${MAX_EDGE}." >&2
+    echo "      For larger cells use fewer frames (--frames / --at) or --max-edge 0 (frames on disk keep full resolution)." >&2
   fi
   echo ""
   echo "   📊 Montage: ${BASENAME}_montage_${RUN_ID}.jpg (${TILE} grid, ${MONTAGE_SIZE})"

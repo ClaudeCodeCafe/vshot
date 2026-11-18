@@ -226,6 +226,49 @@ assert "--cols 2 montage" "$VSHOT" "$VIDEO" --montage --cols 2 --frames 3 --outp
 assert_count "cols montage exists" "$COLS_DIR" "*_montage_*.jpg" 1
 
 echo ""
+echo "── Montage max edge (--max-edge, #3) ──"
+# 20 frames in detail mode → 5x4 grid of 1280x720 cells (6440 px wide unbounded).
+# --at is not capped to the 3s duration, so it can request 20 frames.
+EDGE_AT="0,0.15,0.3,0.45,0.6,0.75,0.9,1.05,1.2,1.35,1.5,1.65,1.8,1.95,2.1,2.25,2.4,2.55,2.7,2.85"
+montage_long_edge() {
+  local m
+  m=$(find "$1" -maxdepth 1 -name "*_montage_*.jpg" -type f 2>/dev/null | head -1)
+  [ -n "$m" ] || { echo 0; return; }
+  ffprobe -v error -show_entries stream=width,height -of csv=p=0 "$m" \
+    | awk -F, '{print ($1 > $2) ? $1 : $2}'
+}
+EDGE_DIR="${TMPDIR_TEST}/max_edge"
+EDGE_ERR="${TMPDIR_TEST}/max_edge.err"
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --output "$EDGE_DIR" >/dev/null 2>"$EDGE_ERR"
+EDGE=$(montage_long_edge "$EDGE_DIR")
+if [ "$EDGE" -gt 0 ] && [ "$EDGE" -le 2576 ]; then
+  echo "  ✅ default montage long edge <= 2576 (${EDGE}px)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ default montage long edge ${EDGE}px (expected 1-2576)"
+  FAIL=$((FAIL + 1))
+fi
+assert "shrink note on stderr" grep -q "cells shrunk" "$EDGE_ERR"
+NOEDGE_DIR="${TMPDIR_TEST}/max_edge_off"
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 0 --output "$NOEDGE_DIR" >/dev/null 2>&1
+EDGE=$(montage_long_edge "$NOEDGE_DIR")
+if [ "$EDGE" -eq 6440 ]; then
+  echo "  ✅ --max-edge 0 keeps full size (${EDGE}px)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --max-edge 0 long edge ${EDGE}px (expected 6440)"
+  FAIL=$((FAIL + 1))
+fi
+EDGE_JSON=$("$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --json --output "${TMPDIR_TEST}/max_edge_json" 2>/dev/null)
+if echo "$EDGE_JSON" | grep -q '"montage_cell":"[0-9]*x[0-9]*","montage_shrunk":true'; then
+  echo "  ✅ --json reports montage_cell / montage_shrunk"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --json missing montage_cell / montage_shrunk: $EDGE_JSON"
+  FAIL=$((FAIL + 1))
+fi
+
+echo ""
 echo "── JSON output (--json) ──"
 JSON_DIR="${TMPDIR_TEST}/json"
 JSON_OUT=$("$VSHOT" "$VIDEO" --montage --frames 2 --json --output "$JSON_DIR" 2>/dev/null)
@@ -264,6 +307,7 @@ assert_fail "no args errors" "$VSHOT"
 assert_fail "invalid --at errors" "$VSHOT" "$VIDEO" --at abc
 assert_fail "all --at out-of-range errors" "$VSHOT" "$VIDEO" --at 999
 assert_fail "invalid --cols errors" "$VSHOT" "$VIDEO" --montage --cols 0 --frames 2
+assert_fail "invalid --max-edge errors" "$VSHOT" "$VIDEO" --montage --max-edge -1 --frames 2
 
 echo ""
 echo "── Font fallback ──"
