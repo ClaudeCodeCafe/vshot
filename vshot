@@ -202,6 +202,10 @@ while [ $# -gt 0 ]; do
       # --scene can optionally take a threshold value (0.0-1.0)
       if [ $# -ge 2 ] && echo "$2" | grep -qE '^(0|0?\.[0-9]+|1(\.0+)?)$'; then
         SCENE="$2"; shift 2
+      elif [ $# -ge 2 ] && echo "$2" | grep -qE '^[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)$'; then
+        # Numeric but out of range — fail clearly instead of treating it as
+        # a video path or an unknown option
+        echo "Error: --scene threshold must be a number between 0.0 and 1.0 (e.g. 0.3), got '$2'" >&2; exit 1
       else
         SCENE="0.3"; shift
       fi ;;
