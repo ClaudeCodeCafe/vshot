@@ -17,6 +17,17 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The workflow bumps versions on main and moves the tag to that commit.
+      # Refuse to run if main has moved past the tagged commit, otherwise the
+      # release would silently include commits that were not part of the tag.
+      - name: Ensure tag points at main HEAD
+        run: |
+          MAIN_SHA=$(git rev-parse HEAD)
+          if [ "$MAIN_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME ($GITHUB_SHA) is not main HEAD ($MAIN_SHA). Re-tag the current main HEAD and push again."
+            exit 1
+          fi
+
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
