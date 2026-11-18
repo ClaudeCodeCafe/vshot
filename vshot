@@ -46,8 +46,9 @@ OPTIONS:
   --montage         Combine all frames into a single grid image
   --cols N          Number of montage grid columns (default: auto from aspect ratio)
   --output DIR      Output directory (default: <video>_vshot/)
-  --no-timestamps   Don't burn timestamps into extracted frames
+  --no-timestamps   Don't add timestamps (frame burn-in or montage labels)
   --cleanup         Remove individual frames after creating montage
+                    (timestamps then become montage cell labels; no per-frame burn-in)
   --json            Print a machine-readable JSON result line to stdout
                     (human-readable progress goes to stderr)
   -h, --help        Show this help
@@ -584,8 +585,14 @@ for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
 done
 
 # ── Burn timestamps (#15: count and warn on failures) ─────────────────────
+# (#11) With --montage --cleanup the frames are deleted anyway, so skip the
+# per-frame re-encode and render timestamps as montage cell labels instead
+LABELS_ONLY=false
+if $TIMESTAMPS && $MONTAGE && $CLEANUP; then
+  LABELS_ONLY=true
+fi
 TS_FAILURES=0
-if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
+if $TIMESTAMPS && ! $LABELS_ONLY && [ "$EXTRACTED" -gt 0 ]; then
   echo -n "   Adding timestamps..."
   detect_font
   # Build fontfile option for drawtext if a font was detected
@@ -686,9 +693,10 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     fi
   }
 
-  # Fallback for failed burn-ins: render timestamps as labels under each cell
+  # Labels under each cell: fallback for failed burn-ins, or the only
+  # timestamp rendering when burn-in was skipped (#11)
   USE_LABELS=false
-  if $TIMESTAMPS && [ "$TS_FAILURES" -gt 0 ]; then
+  if $TIMESTAMPS && { $LABELS_ONLY || [ "$TS_FAILURES" -gt 0 ]; }; then
     USE_LABELS=true
   fi
   MONTAGE_INPUTS=()

@@ -169,6 +169,8 @@ Frame→time mapping survives even on minimal setups, via a three-level fallback
 2. **ImageMagick annotate** — used automatically when `drawtext` is unavailable (e.g. Homebrew ffmpeg builds without freetype)
 3. **Filenames + montage labels** — every frame filename embeds its timestamp (`frame_0003_t0m12s.jpg`); if both burn-ins fail, the montage renders timestamps as labels under each cell
 
+With `--montage --cleanup` the individual frames are discarded anyway, so burn-in is skipped and timestamps are rendered only as montage cell labels — each frame is encoded once instead of twice.
+
 ## Machine-Readable Output
 
 `--json` keeps human-readable progress on stderr and prints one JSON line to stdout:
