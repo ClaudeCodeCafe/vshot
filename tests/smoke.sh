@@ -282,6 +282,27 @@ else
   echo "  ❌ --name: stale target survived a failed run"
   FAIL=$((FAIL + 1))
 fi
+if [ -z "$(find "$NAME_STALE_DIR" -maxdepth 1 -name '.vshot_montage_*' 2>/dev/null)" ]; then
+  echo "  ✅ --name: no temp montage left after failed run"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: temp montage file left behind"
+  FAIL=$((FAIL + 1))
+fi
+# ImageMagick filename templates (%d, [..]) must be written literally
+NAME_TPL_DIR="${TMPDIR_TEST}/name_tpl"
+assert "--name 'review%03d'" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name 'review%03d' --output "$NAME_TPL_DIR"
+assert_nonempty "--name 'review%03d' -> review%03d.jpg" "${NAME_TPL_DIR}/review%03d.jpg"
+if [ ! -e "${NAME_TPL_DIR}/review000.jpg" ]; then
+  echo "  ✅ --name: no template-expanded review000.jpg"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: ImageMagick expanded the template to review000.jpg"
+  FAIL=$((FAIL + 1))
+fi
+assert "--name 'shot[1]'" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name 'shot[1]' --output "$NAME_TPL_DIR"
+assert_nonempty "--name 'shot[1]' -> shot[1].jpg" "${NAME_TPL_DIR}/shot[1].jpg"
+assert_count "--name templates: exactly 2 montages, no temp leftovers" "$NAME_TPL_DIR" "*.jpg" 2
 assert_fail "--name empty errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name "" --output "${TMPDIR_TEST}/name_bad"
 assert_fail "--name .jpg (empty after strip) errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name .jpg --output "${TMPDIR_TEST}/name_bad"
 assert_fail "--name with / errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name a/b --output "${TMPDIR_TEST}/name_bad"

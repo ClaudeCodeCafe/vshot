@@ -318,7 +318,7 @@ fi
 # ── Temp file for capturing stderr (#3) ───────────────────────────────────
 STDERR_TMP=$(mktemp "${TMPDIR:-/tmp}/vshot_stderr.XXXXXX")
 cleanup_tmp() {
-  rm -f -- "$STDERR_TMP" "${SCENE_PTS_LOG:-}" 2>/dev/null || true
+  rm -f -- "$STDERR_TMP" "${SCENE_PTS_LOG:-}" "${MONTAGE_TMP:-}" 2>/dev/null || true
 }
 trap cleanup_tmp EXIT
 
@@ -706,8 +706,11 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   else
     MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
   fi
+  # ImageMagick expands %d / [..] in output filenames, so render to a temp
+  # name we control (RUN_ID is digits and "_") and rename to the literal path.
+  MONTAGE_TMP="${OUTPUT_DIR}/.vshot_montage_${RUN_ID}.tmp.jpg"
   # Remove any previous file so a stale montage can't pass as this run's result
-  rm -f -- "$MONTAGE_FILE"
+  rm -f -- "$MONTAGE_FILE" "$MONTAGE_TMP"
 
   # Use shared font detection for montage
   detect_font
@@ -742,13 +745,13 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
 
   MONTAGE_OK=false
   LABELS_DROPPED=false
-  if run_montage "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+  if run_montage "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_TMP" 2>"$STDERR_TMP"; then
     MONTAGE_OK=true
   elif [ -z "$DETECTED_FONT" ]; then
     # First attempt failed without a font — try forcing font detection and retry
     detect_font
     if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
-      if montage -font "$DETECTED_FONT" "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+      if montage -font "$DETECTED_FONT" "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_TMP" 2>"$STDERR_TMP"; then
         MONTAGE_OK=true
       fi
     fi
@@ -756,7 +759,7 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   if ! $MONTAGE_OK && $USE_LABELS; then
     # Labels also need a working font — last resort: montage without labels
     # (frame→time mapping is still preserved in the filenames)
-    if run_montage "${FRAME_FILES[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+    if run_montage "${FRAME_FILES[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_TMP" 2>"$STDERR_TMP"; then
       MONTAGE_OK=true
       LABELS_DROPPED=true
     fi
@@ -772,9 +775,14 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   fi
 
   # Verify output file exists and is non-empty (#5)
-  if [ ! -s "$MONTAGE_FILE" ]; then
+  if [ ! -s "$MONTAGE_TMP" ]; then
     echo " FAILED" >&2
     echo "Error: montage file was not created or is empty" >&2
+    exit 1
+  fi
+  if ! mv -f -- "$MONTAGE_TMP" "$MONTAGE_FILE"; then
+    echo " FAILED" >&2
+    echo "Error: could not move montage to ${MONTAGE_FILE}" >&2
     exit 1
   fi
 
