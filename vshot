@@ -56,8 +56,9 @@ OPTIONS:
   --max-edge N      Shrink montage cells so the montage long edge fits N px
                     (default: 2576, Claude's image limit; 0 disables)
   --output DIR      Output directory (default: <video>_vshot/)
-  --no-timestamps   Don't burn timestamps into extracted frames
+  --no-timestamps   Don't add timestamps (frame burn-in or montage labels)
   --cleanup         Remove individual frames after creating montage
+                    (timestamps then become montage cell labels; no per-frame burn-in)
   --json            Print a machine-readable JSON result line to stdout
                     (human-readable progress goes to stderr)
   -h, --help        Show this help
@@ -704,8 +705,14 @@ for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
 done
 
 # ── Burn timestamps (#15: count and warn on failures) ─────────────────────
+# (#11) With --montage --cleanup the frames are deleted anyway, so skip the
+# per-frame re-encode and render timestamps as montage cell labels instead
+LABELS_ONLY=false
+if $TIMESTAMPS && $MONTAGE && $CLEANUP; then
+  LABELS_ONLY=true
+fi
 TS_FAILURES=0
-if $TIMESTAMPS && [ "$EXTRACTED" -gt 0 ]; then
+if $TIMESTAMPS && ! $LABELS_ONLY && [ "$EXTRACTED" -gt 0 ]; then
   echo -n "   Adding timestamps..."
   detect_font
   # Build fontfile option for drawtext if a font was detected
@@ -815,9 +822,10 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     fi
   }
 
-  # Fallback for failed burn-ins: render timestamps as labels under each cell
+  # Labels under each cell: fallback for failed burn-ins, or the only
+  # timestamp rendering when burn-in was skipped (#11)
   USE_LABELS=false
-  if $TIMESTAMPS && [ "$TS_FAILURES" -gt 0 ]; then
+  if $TIMESTAMPS && { $LABELS_ONLY || [ "$TS_FAILURES" -gt 0 ]; }; then
     USE_LABELS=true
   fi
   MONTAGE_INPUTS=()
@@ -834,13 +842,14 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   # Fit the montage long edge within --max-edge (#3): Claude's Read tool
   # downscales larger images anyway, so shrink cells instead of wasting pixels.
   # Each cell is (W+8)x(H+8) with the +4+4 border; reserve ~24px per row for
-  # fallback labels. Extracted frames keep the full mode resolution.
+  # timestamp labels. Extracted frames keep the full mode resolution.
   CELL_W=$W_OUT
   CELL_H=$H_OUT
   CELL_SHRUNK=false
   if [ "$MAX_EDGE" -gt 0 ]; then
     LABEL_H=0
-    $USE_LABELS && LABEL_H=24
+    # Labels are capped at 24pt when fitting (see LABEL_PT below), ~32px tall
+    $USE_LABELS && LABEL_H=32
     # Smallest cell keeping the frame aspect with a 2px short side; the cap
     # cannot go below the grid of such cells plus borders/labels.
     if [ "$W_OUT" -ge "$H_OUT" ]; then
@@ -878,8 +887,14 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     fi
   fi
 
-  # -fill white keeps fallback labels readable on the dark background
-  MONTAGE_OPTS=(-fill white -tile "$TILE" -geometry "${CELL_W}x${CELL_H}+4+4" -background '#0e0e1a' -quality "$Q")
+  # -fill white keeps labels readable on the dark background; scale the
+  # label size with the (possibly shrunk) cell width so it survives
+  # downscaling of wide grids. When fitting --max-edge, cap it at 24pt so it
+  # stays within the per-row label height reserved above.
+  LABEL_PT=$(( CELL_W / 24 ))
+  [ "$LABEL_PT" -lt 16 ] && LABEL_PT=16
+  [ "$MAX_EDGE" -gt 0 ] && [ "$LABEL_PT" -gt 24 ] && LABEL_PT=24
+  MONTAGE_OPTS=(-fill white -pointsize "$LABEL_PT" -tile "$TILE" -geometry "${CELL_W}x${CELL_H}+4+4" -background '#0e0e1a' -quality "$Q")
 
   MONTAGE_OK=false
   LABELS_DROPPED=false
@@ -937,7 +952,11 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   echo "   📊 Montage: $(basename -- "$MONTAGE_FILE") (${TILE} grid, ${MONTAGE_SIZE})"
 
   # (#6) Only delete this run's prefixed frames
-  if $CLEANUP; then
+  # (#11) Keep them if labels were dropped: filenames are then the only
+  # remaining frame→time mapping
+  if $CLEANUP && $LABELS_DROPPED; then
+    echo "   ⚠️  --cleanup skipped: individual frames kept to preserve timestamps." >&2
+  elif $CLEANUP; then
     rm -f -- "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg
     CLEANED=true
     echo "   🧹 Individual frames removed"

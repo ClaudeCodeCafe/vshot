@@ -113,6 +113,62 @@ assert_count "montage exists after cleanup" "$CLEANUP_DIR" "*_montage_*.jpg" 1
 assert_count "individual frames cleaned up" "$CLEANUP_DIR" "vshot_*_frame_*.jpg" 0
 
 echo ""
+echo "── Montage timestamp labels (#11) ──"
+# --montage --cleanup: no per-frame burn-in, timestamps become cell labels
+if LBL_OUT=$("$VSHOT" "$VIDEO" --montage --cleanup --frames 3 --output "${TMPDIR_TEST}/lbl" 2>&1) \
+  && ! echo "$LBL_OUT" | grep -q "Adding timestamps"; then
+  echo "  ✅ --montage --cleanup skips per-frame burn-in"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --montage --cleanup still burns in per frame: $LBL_OUT"
+  FAIL=$((FAIL + 1))
+fi
+# Without --cleanup frames are kept, so they still get burned-in timestamps
+if KEEP_OUT=$("$VSHOT" "$VIDEO" --montage --frames 3 --output "${TMPDIR_TEST}/lbl_keep" 2>&1) \
+  && echo "$KEEP_OUT" | grep -q "Adding timestamps"; then
+  echo "  ✅ --montage without --cleanup keeps per-frame burn-in"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --montage without --cleanup skipped burn-in: $KEEP_OUT"
+  FAIL=$((FAIL + 1))
+fi
+# Labels add a caption row under each cell, so the montage is taller than
+# the --no-timestamps one (which must have no labels)
+assert "--no-timestamps --montage --cleanup" "$VSHOT" "$VIDEO" --no-timestamps --montage --cleanup --frames 3 --output "${TMPDIR_TEST}/lbl_none"
+H_LBL=$(identify -format '%h' "${TMPDIR_TEST}"/lbl/*_montage_*.jpg 2>/dev/null)
+H_NONE=$(identify -format '%h' "${TMPDIR_TEST}"/lbl_none/*_montage_*.jpg 2>/dev/null)
+if [ -n "$H_LBL" ] && [ -n "$H_NONE" ] && [ "$H_LBL" -gt "$H_NONE" ]; then
+  echo "  ✅ labels rendered; --no-timestamps disables them (${H_LBL}px > ${H_NONE}px)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ label height check (labels=${H_LBL:-?}px, none=${H_NONE:-?}px)"
+  FAIL=$((FAIL + 1))
+fi
+# Label failure: montage shim that rejects -label → montage still created
+# without labels, with a warning on stderr
+REAL_MONTAGE_BIN=$(command -v montage)
+if [ -n "$REAL_MONTAGE_BIN" ]; then
+  SHIM_DIR="${TMPDIR_TEST}/shim"
+  mkdir -p "$SHIM_DIR"
+  cat > "${SHIM_DIR}/montage" <<SHIM
+#!/bin/bash
+for a in "\$@"; do [ "\$a" = "-label" ] && { echo "shim: label rejected" >&2; exit 1; }; done
+exec "$REAL_MONTAGE_BIN" "\$@"
+SHIM
+  chmod +x "${SHIM_DIR}/montage"
+  if NOLBL_OUT=$(PATH="${SHIM_DIR}:$PATH" "$VSHOT" "$VIDEO" --montage --cleanup --frames 3 --output "${TMPDIR_TEST}/lbl_fail" 2>&1) \
+    && echo "$NOLBL_OUT" | grep -q "Timestamp labels failed"; then
+    echo "  ✅ label failure falls back to montage without labels"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ label failure fallback: $NOLBL_OUT"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_count "label fallback: montage exists" "${TMPDIR_TEST}/lbl_fail" "*_montage_*.jpg" 1
+  assert_count "label fallback: frames kept despite --cleanup" "${TMPDIR_TEST}/lbl_fail" "vshot_*_frame_*_t*.jpg" 3
+fi
+
+echo ""
 echo "── Modes ──"
 assert "overview mode" "$VSHOT" "$VIDEO" --mode overview --frames 2 --output "${TMPDIR_TEST}/m_overview"
 assert "text mode" "$VSHOT" "$VIDEO" --mode text --frames 2 --output "${TMPDIR_TEST}/m_text"
