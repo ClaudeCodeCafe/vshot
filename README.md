@@ -44,6 +44,8 @@ Aspect ratio is auto-detected. Portrait (9:16) and landscape (16:9) videos are h
 | `text` | 960×540 | Read UI text, code, terminals |
 | `detail` | 1280×720 | Design review, pixel inspection |
 
+Montages are capped at a 2,576 px long edge by default (`--max-edge`), the size Claude's Read tool downscales larger images to. When a grid would be larger, montage cells are shrunk to fit and a note with the effective cell size is printed to stderr — e.g. 20 landscape frames in `text` or `detail` mode give ~507×285 cells. For sharper cells, use fewer frames (`--frames` / `--at`); the individual frame files always keep the full mode resolution. `--max-edge 0` restores the unbounded size.
+
 ## Install
 
 ### Option A: Homebrew (Recommended)
@@ -114,6 +116,9 @@ vshot video.mp4 --scene --montage
 # Stricter scene detection (fewer frames)
 vshot video.mp4 --scene 0.5 --montage
 
+# Cap scene frames for cut-heavy videos (default cap: 30)
+vshot video.mp4 --scene --max-frames 24 --montage
+
 # Pinpoint extraction — re-examine specific moments (seconds, decimals OK)
 vshot video.mp4 --at 3.5,12,48 --mode detail --montage
 
@@ -136,9 +141,11 @@ vshot video.mp4 --montage --cleanup --json | jq -r .montage
 | `--frames N` | Number of frames | 20 |
 | `--interval N` | Extract every N seconds | — |
 | `--scene [N]` | Extract only scene-change frames (0.0-1.0) | 0.3 |
+| `--max-frames N` | Cap on `--scene` frames; extras are thinned evenly over time (warning on stderr) | 30 |
 | `--at LIST` | Extract at specific times in seconds (e.g. `3.5,12,48`) | — |
 | `--cols N` | Montage grid columns | auto |
 | `--name NAME` | Write montage as `<output>/NAME.jpg`, overwriting (requires `--montage`) | `<video>_montage_<run-id>.jpg` |
+| `--max-edge N` | Shrink montage cells so the long edge fits N px (`0` disables) | 2576 |
 | `--output DIR` | Custom output directory | `<video>_vshot/` |
 | `--cleanup` | Remove frames after montage | off |
 | `--no-timestamps` | Skip timestamp overlay | — |
@@ -165,6 +172,8 @@ vshot video.mp4 --montage --cleanup --json | jq -r .montage
 
 Same video. Fewer frames. Zero redundancy.
 
+Cut-heavy videos can trigger a scene change every second, so scene mode is capped at 30 frames by default. When more are detected, vshot keeps frames spread evenly over time (first and last included), deletes the rest, and prints a warning with the original count. Adjust with `--max-frames N`.
+
 ## Timestamps That Never Disappear
 
 Frame→time mapping survives even on minimal setups, via a three-level fallback:
@@ -189,11 +198,13 @@ vshot video.mp4 --montage --cleanup --json | jq
   "frames": 12,
   "output_dir": "/abs/path/video_vshot",
   "montage": "/abs/path/video_vshot/video_montage_123_456.jpg",
-  "files": [{"path": "...frame_0001_t0m00s.jpg", "time": 0.00}]
+  "files": [{"path": "...frame_0001_t0m00s.jpg", "time": 0.00}],
+  "montage_cell": "480x270",
+  "montage_shrunk": false
 }
 ```
 
-No more globbing for `*_montage_*.jpg` in pipelines — `jq -r .montage` and done.
+No more globbing for `*_montage_*.jpg` in pipelines — `jq -r .montage` and done. `montage_cell` is the effective cell size inside the montage (`null` without one); `montage_shrunk` is `true` when `--max-edge` shrank the cells.
 
 ## Token Efficiency
 
