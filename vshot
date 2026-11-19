@@ -612,19 +612,20 @@ if $SEEK_MODE; then
     # returned frame's position is t + pts_time (it can be later than t on
     # sparse/VFR video)
     PTS=$(first_pts "$SEEK_LOG")
-    if [ -n "$PTS" ]; then
-      T=$(awk -v t="$t" -v p="$PTS" 'BEGIN{printf "%.2f", t + p}')
-    else
-      T=$(awk -v t="$t" 'BEGIN{printf "%.2f", t}')
-    fi
-    if [ "$T" = "$PREV_T" ]; then
-      # Sparse video: this time returned the same frame as the previous one
+    [ -z "$PTS" ] && PTS=0
+    T_EXACT=$(awk -v t="$t" -v p="$PTS" 'BEGIN{printf "%.6f", t + p}')
+    T=$(awk -v t="$T_EXACT" 'BEGIN{printf "%.2f", t}')
+    # Sparse video: this time returned the same frame as the previous one.
+    # Compare unrounded times: distinct high-frame-rate frames can share the
+    # 2-decimal display value.
+    if [ -n "$PREV_T" ] && awk -v a="$T_EXACT" -v b="$PREV_T" \
+      'BEGIN{d = a - b; if (d < 0) d = -d; exit !(d < 0.0005)}'; then
       rm -f -- "$OUT_FRAME"
       echo "Note: ${t}s returns the frame at ${T}s again. Skipping duplicate." >&2
       continue
     fi
     AT_TIMES+=("$T")
-    PREV_T="$T"
+    PREV_T="$T_EXACT"
     n=$((n + 1))
   done
 else

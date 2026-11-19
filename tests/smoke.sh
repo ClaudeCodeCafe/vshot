@@ -200,6 +200,11 @@ check_times "sparse, seek path (default mode)" "$SPARSE_SEEK_JSON" "0.00 15.00 "
 SPARSE_AT_JSON=$("$VSHOT" "$SPARSE" --at 2.1,7,8 --no-timestamps --json --output "${TMPDIR_TEST}/sparse_at" 2>/dev/null)
 check_times "sparse --at 2.1,7,8 (duplicate dropped)" "$SPARSE_AT_JSON" "5.00 10.00 "
 assert_count "sparse --at: filename has the real time" "${TMPDIR_TEST}/sparse_at" "vshot_*_frame_0001_t0m05s.jpg" 1
+# 240 fps: distinct frames 4 ms apart share the rounded time 0.01 — both kept
+HFR="${TMPDIR_TEST}/hfr.mp4"
+ffmpeg -v error -f lavfi -i "color=c=blue:s=160x90:r=240:d=1" -c:v mpeg4 -y "$HFR" 2>/dev/null
+assert "--at on 240 fps clip" "$VSHOT" "$HFR" --at 0.005,0.01 --output "${TMPDIR_TEST}/hfr"
+assert_count "240 fps: distinct frames not deduplicated" "${TMPDIR_TEST}/hfr" "vshot_*_frame_*.jpg" 2
 
 echo ""
 echo "── ffmpeg errors stay fatal (#10) ──"
