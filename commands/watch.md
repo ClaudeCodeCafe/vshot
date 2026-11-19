@@ -12,7 +12,7 @@ Extract frames from a video file and analyze the content visually.
 
 1. Parse the arguments. The first argument is the video file path. Optional flags:
    - `--mode`: overview (default), text (for reading UI/text), detail (high-res)
-   - `--frames`: number of frames (default: 16)
+   - `--frames`: number of frames (default: 16 for `/watch` — intentionally fewer than the CLI default of 20 to keep the montage compact)
 
 2. Check dependencies:
 

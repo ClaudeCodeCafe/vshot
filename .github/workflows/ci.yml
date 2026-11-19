@@ -14,7 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: ShellCheck
-        run: shellcheck vshot
+        run: |
+          shellcheck vshot
+          shellcheck -S warning tests/smoke.sh
 
   smoke-test:
     runs-on: ubuntu-latest
@@ -24,3 +26,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg imagemagick
       - name: Run smoke tests
         run: bash tests/smoke.sh
+
+  # vshot targets macOS's stock bash 3.2 — run the smoke tests there too
+  smoke-test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install ffmpeg imagemagick
+      - name: Show bash version
+        run: /bin/bash --version | head -1
+      - name: Run smoke tests with /bin/bash (3.2)
+        run: /bin/bash tests/smoke.sh
