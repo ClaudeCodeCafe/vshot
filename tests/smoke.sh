@@ -161,6 +161,18 @@ assert "scene threshold 0" "$VSHOT" "$SCENE_VIDEO" --scene 0 --output "${TMPDIR_
 assert "scene threshold 0.0" "$VSHOT" "$SCENE_VIDEO" --scene 0.0 --output "${TMPDIR_TEST}/scene_zero2"
 assert "scene threshold .0" "$VSHOT" "$SCENE_VIDEO" --scene .0 --output "${TMPDIR_TEST}/scene_zero3"
 
+# Out-of-range --scene threshold gives a clear error, not "multiple video files" (#9)
+for BAD_SCENE in 1.5 -0.1 2; do
+  SCENE_ERR=$("$VSHOT" "$SCENE_VIDEO" --scene "$BAD_SCENE" --output "${TMPDIR_TEST}/scene_bad" 2>&1 >/dev/null)
+  if [ $? -ne 0 ] && echo "$SCENE_ERR" | grep -q "threshold must be"; then
+    echo "  ✅ scene threshold $BAD_SCENE rejected with clear error"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ scene threshold $BAD_SCENE: unexpected result: $SCENE_ERR"
+    FAIL=$((FAIL + 1))
+  fi
+done
+
 # --scene 1.0 — very high threshold, likely 0 frames (exit 2) (#4, #9)
 "$VSHOT" "$SCENE_VIDEO" --scene 1.0 --output "${TMPDIR_TEST}/scene_max" >/dev/null 2>&1
 SCENE_MAX_EXIT=$?
