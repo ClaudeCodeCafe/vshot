@@ -506,7 +506,9 @@ else
     echo "Warning: --frames $FRAMES exceeds video duration (${DURATION_INT}s). Capping to $DURATION_INT." >&2
     FRAMES=$DURATION_INT
   fi
-  STEP=$(echo "$DURATION $FRAMES" | awk '{printf "%.4f", $1 / $2}')
+  # Truncate (not round) to microseconds: a STEP or seek target rounded up
+  # can land just past a frame that sits exactly on the i * STEP grid
+  STEP=$(echo "$DURATION $FRAMES" | awk '{printf "%.6f", int($1 / $2 * 1000000) / 1000000}')
   # Seeking costs a roughly fixed time per frame; a single pass costs decode
   # time proportional to the duration. Seek only when it is faster (#10).
   if awk -v s="$STEP" -v m="$SEEK_MIN_STEP" 'BEGIN{exit !(s >= m)}'; then
@@ -514,7 +516,7 @@ else
     AT_ARR=()
     while read -r t; do
       AT_ARR+=("$t")
-    done < <(awk -v n="$FRAMES" -v s="$STEP" 'BEGIN{for (i = 0; i < n; i++) printf "%.2f\n", i * s}')
+    done < <(awk -v n="$FRAMES" -v s="$STEP" 'BEGIN{for (i = 0; i < n; i++) printf "%.6f\n", i * s}')
   else
     VF_FILTER="$(bucket_select "$STEP"),showinfo,scale=${W_OUT}:${H_OUT}"
   fi
@@ -587,6 +589,9 @@ if $SEEK_MODE; then
   n=1
   PREV_T=""
   for t in "${AT_ARR[@]}"; do
+    # Requested time for messages: --at as given, computed targets rounded
+    t_req="$t"
+    $AT_MODE || t_req=$(awk -v t="$t" 'BEGIN{printf "%.2f", t}')
     OUT_FRAME="${OUTPUT_DIR}/${FRAME_PREFIX}_$(printf '%04d' "$n").jpg"
     rm -f -- "$OUT_FRAME"
     if ! ffmpeg -v info -hide_banner -nostdin -ss "$t" -i "$VIDEO" \
@@ -596,7 +601,7 @@ if $SEEK_MODE; then
       "$OUT_FRAME" 2>"$SEEK_LOG"; then
       # Any ffmpeg failure is fatal, even after earlier frames succeeded
       FFMPEG_EXIT=1
-      echo "   (while extracting the frame at ${t}s)" >> "$STDERR_TMP"
+      echo "   (while extracting the frame at ${t_req}s)" >> "$STDERR_TMP"
       cat -- "$SEEK_LOG" >> "$STDERR_TMP"
       rm -f -- "$OUT_FRAME"
       break
@@ -605,7 +610,7 @@ if $SEEK_MODE; then
       # ffmpeg succeeded but found no frame at or after t: the time is past the
       # last video frame (e.g. the container/audio is longer than the video)
       rm -f -- "$OUT_FRAME"
-      echo "Warning: no video frame at or after ${t}s (past the end of the video stream). Skipping." >&2
+      echo "Warning: no video frame at or after ${t_req}s (past the end of the video stream). Skipping." >&2
       continue
     fi
     # Without -copyts, output PTS are relative to the seek target, so the
@@ -621,7 +626,7 @@ if $SEEK_MODE; then
     if [ -n "$PREV_T" ] && awk -v a="$T_EXACT" -v b="$PREV_T" \
       'BEGIN{d = a - b; if (d < 0) d = -d; exit !(d < 0.0005)}'; then
       rm -f -- "$OUT_FRAME"
-      echo "Note: ${t}s returns the frame at ${T}s again. Skipping duplicate." >&2
+      echo "Note: ${t_req}s returns the frame at ${T}s again. Skipping duplicate." >&2
       continue
     fi
     AT_TIMES+=("$T")

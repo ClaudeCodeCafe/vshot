@@ -200,6 +200,13 @@ check_times "sparse, seek path (default mode)" "$SPARSE_SEEK_JSON" "0.00 15.00 "
 SPARSE_AT_JSON=$("$VSHOT" "$SPARSE" --at 2.1,7,8 --no-timestamps --json --output "${TMPDIR_TEST}/sparse_at" 2>/dev/null)
 check_times "sparse --at 2.1,7,8 (duplicate dropped)" "$SPARSE_AT_JSON" "5.00 10.00 "
 assert_count "sparse --at: filename has the real time" "${TMPDIR_TEST}/sparse_at" "vshot_*_frame_0001_t0m05s.jpg" 1
+# Frames exactly on the seek grid (3/25 fps → 0, 8.333…, 16.666… s): seek
+# targets must not be rounded past them
+GRID="${TMPDIR_TEST}/grid.mp4"
+ffmpeg -v error -f lavfi -i "nullsrc=s=160x90:r=3/25:d=25,geq=lum='16+10*T':cb=128:cr=128" \
+  -c:v mpeg4 -q:v 2 -y "$GRID" 2>/dev/null
+GRID_JSON=$("$VSHOT" "$GRID" --frames 3 --no-timestamps --json --output "${TMPDIR_TEST}/grid" 2>/dev/null)
+check_times "seek targets on a 25/3 s frame grid" "$GRID_JSON" "0.00 8.33 16.67 "
 # 240 fps: distinct frames 4 ms apart share the rounded time 0.01 — both kept
 HFR="${TMPDIR_TEST}/hfr.mp4"
 ffmpeg -v error -f lavfi -i "color=c=blue:s=160x90:r=240:d=1" -c:v mpeg4 -y "$HFR" 2>/dev/null
