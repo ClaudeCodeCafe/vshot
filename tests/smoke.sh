@@ -267,6 +267,26 @@ else
   echo "  ❌ --json missing montage_cell / montage_shrunk: $EDGE_JSON"
   FAIL=$((FAIL + 1))
 fi
+# A cap below the smallest padded 5x4 grid must fail instead of overshooting
+TINY_ERR="${TMPDIR_TEST}/max_edge_tiny.err"
+assert_fail "--max-edge 40 (below grid minimum) fails" \
+  "$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 40 --output "${TMPDIR_TEST}/max_edge_tiny"
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 40 --output "${TMPDIR_TEST}/max_edge_tiny2" >/dev/null 2>"$TINY_ERR"
+assert "too-small cap names the minimum" grep -q "too small .*minimum [0-9]" "$TINY_ERR"
+# Leading zeros are decimal, not octal
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 2576 --output "${TMPDIR_TEST}/max_edge_dec" >/dev/null 2>&1
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 02576 --output "${TMPDIR_TEST}/max_edge_oct" >/dev/null 2>&1
+EDGE_DEC=$(montage_long_edge "${TMPDIR_TEST}/max_edge_dec")
+EDGE_OCT=$(montage_long_edge "${TMPDIR_TEST}/max_edge_oct")
+if [ "$EDGE_OCT" -gt 0 ] && [ "$EDGE_OCT" -le 2576 ] && [ "$EDGE_OCT" -eq "$EDGE_DEC" ]; then
+  echo "  ✅ --max-edge 02576 is decimal (${EDGE_OCT}px, same as 2576)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --max-edge 02576 long edge ${EDGE_OCT}px (2576 gives ${EDGE_DEC}px)"
+  FAIL=$((FAIL + 1))
+fi
+assert "--max-edge 0800 succeeds" \
+  "$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 0800 --output "${TMPDIR_TEST}/max_edge_0800"
 
 echo ""
 echo "── JSON output (--json) ──"

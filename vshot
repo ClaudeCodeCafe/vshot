@@ -274,6 +274,8 @@ case "$MAX_EDGE" in
     echo "Error: --max-edge must be a non-negative integer, got '$MAX_EDGE'" >&2
     exit 1 ;;
 esac
+# Force base 10: a leading zero (e.g. 0800) would otherwise be read as octal
+MAX_EDGE=$((10#$MAX_EDGE))
 
 # Parse --at into a validated list (range check happens after duration probe)
 AT_MODE=false
@@ -729,6 +731,25 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   if [ "$MAX_EDGE" -gt 0 ]; then
     LABEL_H=0
     $USE_LABELS && LABEL_H=24
+    # Smallest cell keeping the frame aspect with a 2px short side; the cap
+    # cannot go below the grid of such cells plus borders/labels.
+    if [ "$W_OUT" -ge "$H_OUT" ]; then
+      MIN_CELL_H=2
+      MIN_CELL_W=$(( (2 * W_OUT + H_OUT - 1) / H_OUT ))
+    else
+      MIN_CELL_W=2
+      MIN_CELL_H=$(( (2 * H_OUT + W_OUT - 1) / W_OUT ))
+    fi
+    MIN_EDGE_W=$(( COLS * (MIN_CELL_W + 8) ))
+    MIN_EDGE_H=$(( ROWS * (MIN_CELL_H + 8 + LABEL_H) ))
+    MIN_EDGE=$MIN_EDGE_W
+    [ "$MIN_EDGE_H" -gt "$MIN_EDGE" ] && MIN_EDGE=$MIN_EDGE_H
+    if [ "$MAX_EDGE" -lt "$MIN_EDGE" ]; then
+      echo " FAILED" >&2
+      echo "Error: --max-edge ${MAX_EDGE} is too small for a ${COLS}x${ROWS} montage grid (minimum ${MIN_EDGE})." >&2
+      echo "  Use --max-edge ${MIN_EDGE} or larger, fewer frames (--frames / --at), or --max-edge 0 to disable." >&2
+      exit 1
+    fi
     FIT_W=$(( MAX_EDGE / COLS - 8 ))
     FIT_H=$(( MAX_EDGE / ROWS - 8 - LABEL_H ))
     if [ "$CELL_W" -gt "$FIT_W" ]; then
