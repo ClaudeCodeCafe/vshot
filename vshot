@@ -21,6 +21,7 @@ OUTPUT_DIR=""
 TIMESTAMPS=true
 CLEANUP=false
 SCENE=""
+MAX_FRAMES=30
 AT=""
 COLS_OPT=""
 MAX_EDGE=2576
@@ -41,6 +42,8 @@ OPTIONS:
   --interval N      Extract every N seconds (overrides --frames)
   --scene [N]       Extract only scene-change frames (threshold 0.0-1.0, default: 0.3)
                     Lower = more frames, higher = fewer frames. Overrides --frames.
+  --max-frames N    Cap on --scene frames (default: 30). Extra scene changes are
+                    thinned evenly over time.
   --at LIST         Extract frames at specific times in seconds (comma-separated,
                     decimals allowed, e.g. 3.5,12,48). Overrides --frames/--interval/--scene.
   --mode MODE       overview | text | detail (default: overview)
@@ -68,6 +71,7 @@ EXAMPLES:
   ${SCRIPT_NAME} video.mp4 --frames 30 --mode detail # 30 high-res frames
   ${SCRIPT_NAME} video.mp4 --scene --montage         # scene changes only
   ${SCRIPT_NAME} video.mp4 --scene 0.5 --montage     # fewer scene changes
+  ${SCRIPT_NAME} video.mp4 --scene --max-frames 24 --montage # cap scene frames
   ${SCRIPT_NAME} video.mp4 --at 3.5,12,48 --montage  # pinpoint extraction
   ${SCRIPT_NAME} video.mp4 --montage --json          # machine-readable result
 EOF
@@ -215,6 +219,11 @@ while [ $# -gt 0 ]; do
       else
         SCENE="0.3"; shift
       fi ;;
+    --max-frames)
+      if [ $# -lt 2 ]; then
+        echo "Error: --max-frames requires a value" >&2; exit 1
+      fi
+      MAX_FRAMES="$2"; shift 2 ;;
     --at)
       if [ $# -lt 2 ]; then
         echo "Error: --at requires a value" >&2; exit 1
@@ -267,6 +276,14 @@ if [ -n "$INTERVAL" ]; then
     exit 1
   fi
 fi
+
+if ! is_positive_integer "$MAX_FRAMES"; then
+  echo "Error: --max-frames must be a positive integer, got '$MAX_FRAMES'" >&2
+  exit 1
+fi
+# Normalize to decimal: "08" would otherwise be emitted as invalid JSON and
+# parsed as octal by bash arithmetic
+MAX_FRAMES=$((10#$MAX_FRAMES))
 
 if [ -n "$COLS_OPT" ] && ! is_positive_integer "$COLS_OPT"; then
   echo "Error: --cols must be a positive integer, got '$COLS_OPT'" >&2
@@ -460,7 +477,7 @@ echo "   Mode:     $MODE (${W_OUT}x${H_OUT})"
 if $AT_MODE; then
   echo "   At:       $(echo "${AT_ARR[@]}" | tr ' ' ',')s (${FRAMES} frames)"
 elif $SCENE_MODE; then
-  echo "   Scene:    threshold=${SCENE} (auto frame count)"
+  echo "   Scene:    threshold=${SCENE} (auto frame count, max ${MAX_FRAMES})"
 elif [ -n "$INTERVAL" ]; then
   echo "   Interval: every ${INTERVAL}s"
 else
@@ -564,6 +581,53 @@ if [ "$FFMPEG_EXIT" -ne 0 ]; then
 fi
 
 echo " done (${EXTRACTED} frames)"
+
+# ── Cap scene frames (--max-frames) ────────────────────────────────────────
+# Thin evenly over time using the captured scene PTS values: for each of N
+# targets spaced evenly between the first and last scene time, keep the
+# not-yet-chosen scene closest to it (first and last always kept; ties go to
+# the earlier scene). Falls back to evenly spaced indices if the PTS log does
+# not line up with the extracted frames. Frames and PTS log lines are both in
+# output order, so the PTS log is rewritten to the kept lines to keep
+# timestamps aligned.
+if $SCENE_MODE && [ "$EXTRACTED" -gt "$MAX_FRAMES" ]; then
+  echo "   ⚠️  ${EXTRACTED} scene changes detected; thinning evenly to --max-frames ${MAX_FRAMES}." >&2
+  PTS_SRC="$SCENE_PTS_LOG"
+  if [ ! -s "$PTS_SRC" ] || [ "$(awk 'END {print NR}' "$PTS_SRC")" -ne "$EXTRACTED" ]; then
+    PTS_SRC=/dev/null
+  fi
+  KEEP_LIST=$(awk -v e="$EXTRACTED" -v n="$MAX_FRAMES" '
+    { pts[NR - 1] = $1 + 0 }
+    END {
+      if (NR != e) for (j = 0; j < e; j++) pts[j] = j
+      used[0] = 1; print 0
+      if (n == 1) exit
+      used[e - 1] = 1; print e - 1
+      first = pts[0]; last = pts[e - 1]
+      for (k = 1; k < n - 1; k++) {
+        target = first + k * (last - first) / (n - 1)
+        best = -1
+        for (j = 0; j < e; j++) {
+          if (j in used) continue
+          d = pts[j] - target; if (d < 0) d = -d
+          if (best < 0 || d < bestd) { best = j; bestd = d }
+        }
+        used[best] = 1; print best
+      }
+    }' "$PTS_SRC")
+  PTS_KEPT=$(mktemp "${TMPDIR:-/tmp}/vshot_pts.XXXXXX")
+  i=0
+  for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
+    if echo "$KEEP_LIST" | grep -qx "$i"; then
+      [ -s "$SCENE_PTS_LOG" ] && awk -v n="$((i + 1))" 'NR == n {print; exit}' "$SCENE_PTS_LOG" >> "$PTS_KEPT"
+    else
+      rm -f -- "$frame"
+    fi
+    i=$((i + 1))
+  done
+  mv -- "$PTS_KEPT" "$SCENE_PTS_LOG"
+  EXTRACTED="$MAX_FRAMES"
+fi
 
 if [ "$EXTRACTED" -eq 0 ]; then
   if $SCENE_MODE; then

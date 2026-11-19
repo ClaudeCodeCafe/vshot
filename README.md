@@ -116,6 +116,9 @@ vshot video.mp4 --scene --montage
 # Stricter scene detection (fewer frames)
 vshot video.mp4 --scene 0.5 --montage
 
+# Cap scene frames for cut-heavy videos (default cap: 30)
+vshot video.mp4 --scene --max-frames 24 --montage
+
 # Pinpoint extraction — re-examine specific moments (seconds, decimals OK)
 vshot video.mp4 --at 3.5,12,48 --mode detail --montage
 
@@ -135,6 +138,7 @@ vshot video.mp4 --montage --cleanup --json | jq -r .montage
 | `--frames N` | Number of frames | 20 |
 | `--interval N` | Extract every N seconds | — |
 | `--scene [N]` | Extract only scene-change frames (0.0-1.0) | 0.3 |
+| `--max-frames N` | Cap on `--scene` frames; extras are thinned evenly over time (warning on stderr) | 30 |
 | `--at LIST` | Extract at specific times in seconds (e.g. `3.5,12,48`) | — |
 | `--cols N` | Montage grid columns | auto |
 | `--max-edge N` | Shrink montage cells so the long edge fits N px (`0` disables) | 2576 |
@@ -163,6 +167,8 @@ vshot video.mp4 --montage --cleanup --json | jq -r .montage
 </table>
 
 Same video. Fewer frames. Zero redundancy.
+
+Cut-heavy videos can trigger a scene change every second, so scene mode is capped at 30 frames by default. When more are detected, vshot keeps frames spread evenly over time (first and last included), deletes the rest, and prints a warning with the original count. Adjust with `--max-frames N`.
 
 ## Timestamps That Never Disappear
 
