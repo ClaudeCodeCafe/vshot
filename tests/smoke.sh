@@ -225,6 +225,54 @@ assert_count "--max-frames 5: 5 frames" "$CAP_DIR" "vshot_*_frame_*.jpg" 5
 assert "--max-frames 5: timestamps aligned and increasing" check_cut_timestamps "$CAP_DIR"
 assert_count "--max-frames 5: montage exists" "$CAP_DIR" "*_montage_*.jpg" 1
 
+# Uneven cuts: dense every second for 1–10 s, then sparse at 30 s and 50 s.
+# Thinning must space by time, not by scene index, so 30 s and 50 s survive.
+UNEVEN_VIDEO="${TMPDIR_TEST}/uneven.mp4"
+UNEVEN_SRC="nullsrc=s=640x360:r=10:d=60,geq=lum='if(mod(if(lt(T,11),floor(T),if(lt(T,30),10,if(lt(T,50),11,12))),2),230,20)':cb=128:cr=128"
+ffmpeg -v error -f lavfi -i "$UNEVEN_SRC" -c:v libx264 -pix_fmt yuv420p -y "$UNEVEN_VIDEO" 2>/dev/null || \
+  ffmpeg -v error -f lavfi -i "$UNEVEN_SRC" -c:v mpeg4 -pix_fmt yuv420p -y "$UNEVEN_VIDEO" 2>/dev/null
+
+# Kept frames' timestamps (whole seconds), space-separated, from filenames
+kept_seconds() {
+  local f
+  for f in "$1"/vshot_*_frame_*_t*.jpg; do
+    [ -f "$f" ] || continue
+    echo "$f" | sed 's/.*_t\([0-9]*\)m\([0-9.]*\)s\.jpg$/\1 \2/' | awk '{printf "%d ", $1 * 60 + $2 + 0.5}'
+  done
+}
+
+UNEVEN_DIR="${TMPDIR_TEST}/uneven"
+UNEVEN_ERR=$("$VSHOT" "$UNEVEN_VIDEO" --scene --max-frames 5 --output "$UNEVEN_DIR" 2>&1 >/dev/null)
+assert_count "uneven cuts --max-frames 5: 5 frames" "$UNEVEN_DIR" "vshot_*_frame_*.jpg" 5
+UNEVEN_KEPT=" $(kept_seconds "$UNEVEN_DIR")"
+if echo "$UNEVEN_ERR" | grep -q "12 scene changes detected" && \
+   echo "$UNEVEN_KEPT" | grep -q " 30 " && echo "$UNEVEN_KEPT" | grep -q " 50 "; then
+  echo "  ✅ uneven cuts: sparse later scenes (30 s, 50 s) kept"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ uneven cuts: kept [${UNEVEN_KEPT}], stderr: $UNEVEN_ERR"
+  FAIL=$((FAIL + 1))
+fi
+
+# Leading-zero cap must be normalized to decimal (no octal, valid JSON)
+OCT_DIR="${TMPDIR_TEST}/cap_octal"
+OCT_OUT=$("$VSHOT" "$CUTS_VIDEO" --scene --max-frames 08 --montage --json --output "$OCT_DIR" 2>/dev/null)
+OCT_RC=$?
+if command -v python3 >/dev/null 2>&1; then
+  OCT_FRAMES=$(echo "$OCT_OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["frames"])' 2>/dev/null)
+else
+  OCT_FRAMES=$(echo "$OCT_OUT" | grep -o '"frames":[0-9]*' | sed 's/"frames"://')
+  echo "$OCT_OUT" | grep -q '"frames":0[0-9]' && OCT_FRAMES="invalid"
+fi
+if [ "$OCT_RC" -eq 0 ] && [ "$OCT_FRAMES" = "8" ]; then
+  echo "  ✅ --max-frames 08 --json: valid JSON with frames 8"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --max-frames 08 --json: rc=$OCT_RC frames='$OCT_FRAMES' out: $OCT_OUT"
+  FAIL=$((FAIL + 1))
+fi
+assert_count "--max-frames 08: 8 frames" "$OCT_DIR" "vshot_*_frame_*.jpg" 8
+
 assert_fail "invalid --max-frames 0 errors" "$VSHOT" "$CUTS_VIDEO" --scene --max-frames 0
 assert_fail "invalid --max-frames abc errors" "$VSHOT" "$CUTS_VIDEO" --scene --max-frames abc
 
