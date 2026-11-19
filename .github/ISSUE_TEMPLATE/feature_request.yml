@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a new feature or an improvement to existing behavior
+labels: ["enhancement"]
+body:
+  - type: textarea
+    attributes:
+      label: Summary
+      description: Describe the current behavior and what you would like to change or add.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Evidence
+      description: Why this matters — measurements, logs, or code references. Mark anything you have not verified as "unverified".
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: Proposal
+      description: How you would solve it. Alternatives you considered are welcome too.
+    validations:
+      required: false
+
+  - type: textarea
+    attributes:
+      label: Example
+      description: How the command line or the `/watch` workflow would look with this change.
+      render: shell
+    validations:
+      required: false
+
+  - type: dropdown
+    attributes:
+      label: Priority
+      description: Your estimate of how important this is.
+      options:
+        - High
+        - Medium
+        - Low
+    validations:
+      required: false

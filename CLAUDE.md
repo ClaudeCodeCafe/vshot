@@ -7,13 +7,21 @@ One montage grid image lets AI "watch" videos.
 
 ```
 vshot/
-├── .claude-plugin/plugin.json   # Plugin manifest
+├── .claude-plugin/
+│   ├── plugin.json              # Plugin manifest
+│   └── marketplace.json         # Marketplace manifest
 ├── vshot                        # CLI tool (single bash script)
 ├── commands/
 │   ├── watch.md                 # /watch command
 │   └── setup.md                 # /vshot:setup command
 ├── skills/
-│   └── video-analysis.md        # Auto-trigger video analysis skill
+│   └── video-analysis/
+│       └── SKILL.md             # Auto-trigger video analysis skill
+├── tests/
+│   └── smoke.sh                 # Smoke tests (run by CI)
+├── docs/                        # README images
+├── .github/workflows/           # CI (shellcheck + smoke) and release
+├── README.md
 └── CLAUDE.md
 ```
 

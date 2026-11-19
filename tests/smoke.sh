@@ -131,6 +131,62 @@ assert_count "montage exists after cleanup" "$CLEANUP_DIR" "*_montage_*.jpg" 1
 assert_count "individual frames cleaned up" "$CLEANUP_DIR" "vshot_*_frame_*.jpg" 0
 
 echo ""
+echo "── Montage timestamp labels (#11) ──"
+# --montage --cleanup: no per-frame burn-in, timestamps become cell labels
+if LBL_OUT=$("$VSHOT" "$VIDEO" --montage --cleanup --frames 3 --output "${TMPDIR_TEST}/lbl" 2>&1) \
+  && ! echo "$LBL_OUT" | grep -q "Adding timestamps"; then
+  echo "  ✅ --montage --cleanup skips per-frame burn-in"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --montage --cleanup still burns in per frame: $LBL_OUT"
+  FAIL=$((FAIL + 1))
+fi
+# Without --cleanup frames are kept, so they still get burned-in timestamps
+if KEEP_OUT=$("$VSHOT" "$VIDEO" --montage --frames 3 --output "${TMPDIR_TEST}/lbl_keep" 2>&1) \
+  && echo "$KEEP_OUT" | grep -q "Adding timestamps"; then
+  echo "  ✅ --montage without --cleanup keeps per-frame burn-in"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --montage without --cleanup skipped burn-in: $KEEP_OUT"
+  FAIL=$((FAIL + 1))
+fi
+# Labels add a caption row under each cell, so the montage is taller than
+# the --no-timestamps one (which must have no labels)
+assert "--no-timestamps --montage --cleanup" "$VSHOT" "$VIDEO" --no-timestamps --montage --cleanup --frames 3 --output "${TMPDIR_TEST}/lbl_none"
+H_LBL=$(identify -format '%h' "${TMPDIR_TEST}"/lbl/*_montage_*.jpg 2>/dev/null)
+H_NONE=$(identify -format '%h' "${TMPDIR_TEST}"/lbl_none/*_montage_*.jpg 2>/dev/null)
+if [ -n "$H_LBL" ] && [ -n "$H_NONE" ] && [ "$H_LBL" -gt "$H_NONE" ]; then
+  echo "  ✅ labels rendered; --no-timestamps disables them (${H_LBL}px > ${H_NONE}px)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ label height check (labels=${H_LBL:-?}px, none=${H_NONE:-?}px)"
+  FAIL=$((FAIL + 1))
+fi
+# Label failure: montage shim that rejects -label → montage still created
+# without labels, with a warning on stderr
+REAL_MONTAGE_BIN=$(command -v montage)
+if [ -n "$REAL_MONTAGE_BIN" ]; then
+  SHIM_DIR="${TMPDIR_TEST}/shim"
+  mkdir -p "$SHIM_DIR"
+  cat > "${SHIM_DIR}/montage" <<SHIM
+#!/bin/bash
+for a in "\$@"; do [ "\$a" = "-label" ] && { echo "shim: label rejected" >&2; exit 1; }; done
+exec "$REAL_MONTAGE_BIN" "\$@"
+SHIM
+  chmod +x "${SHIM_DIR}/montage"
+  if NOLBL_OUT=$(PATH="${SHIM_DIR}:$PATH" "$VSHOT" "$VIDEO" --montage --cleanup --frames 3 --output "${TMPDIR_TEST}/lbl_fail" 2>&1) \
+    && echo "$NOLBL_OUT" | grep -q "Timestamp labels failed"; then
+    echo "  ✅ label failure falls back to montage without labels"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ label failure fallback: $NOLBL_OUT"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_count "label fallback: montage exists" "${TMPDIR_TEST}/lbl_fail" "*_montage_*.jpg" 1
+  assert_count "label fallback: frames kept despite --cleanup" "${TMPDIR_TEST}/lbl_fail" "vshot_*_frame_*_t*.jpg" 3
+fi
+
+echo ""
 echo "── Modes ──"
 assert "overview mode" "$VSHOT" "$VIDEO" --mode overview --frames 2 --output "${TMPDIR_TEST}/m_overview"
 assert "text mode" "$VSHOT" "$VIDEO" --mode text --frames 2 --output "${TMPDIR_TEST}/m_text"
@@ -179,6 +235,18 @@ assert "scene threshold 0" "$VSHOT" "$SCENE_VIDEO" --scene 0 --output "${TMPDIR_
 assert "scene threshold 0.0" "$VSHOT" "$SCENE_VIDEO" --scene 0.0 --output "${TMPDIR_TEST}/scene_zero2"
 assert "scene threshold .0" "$VSHOT" "$SCENE_VIDEO" --scene .0 --output "${TMPDIR_TEST}/scene_zero3"
 
+# Out-of-range --scene threshold gives a clear error, not "multiple video files" (#9)
+for BAD_SCENE in 1.5 -0.1 2; do
+  SCENE_ERR=$("$VSHOT" "$SCENE_VIDEO" --scene "$BAD_SCENE" --output "${TMPDIR_TEST}/scene_bad" 2>&1 >/dev/null)
+  if [ $? -ne 0 ] && echo "$SCENE_ERR" | grep -q "threshold must be"; then
+    echo "  ✅ scene threshold $BAD_SCENE rejected with clear error"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ scene threshold $BAD_SCENE: unexpected result: $SCENE_ERR"
+    FAIL=$((FAIL + 1))
+  fi
+done
+
 # --scene 1.0 — very high threshold, likely 0 frames (exit 2) (#4, #9)
 "$VSHOT" "$SCENE_VIDEO" --scene 1.0 --output "${TMPDIR_TEST}/scene_max" >/dev/null 2>&1
 SCENE_MAX_EXIT=$?
@@ -201,6 +269,98 @@ else
   echo "  ❌ scene custom threshold 0.5 (unexpected exit ${CUSTOM_EXIT})"
   FAIL=$((FAIL + 1))
 fi
+
+echo ""
+echo "── Scene frame cap (--max-frames) ──"
+# 60 s video with a hard cut every second → 59 scene changes, the Nth at N s
+CUTS_VIDEO="${TMPDIR_TEST}/cuts.mp4"
+CUTS_SRC="nullsrc=s=640x360:r=10:d=60,geq=lum='if(mod(floor(T),2),230,20)':cb=128:cr=128"
+ffmpeg -v error -f lavfi -i "$CUTS_SRC" -c:v libx264 -pix_fmt yuv420p -y "$CUTS_VIDEO" 2>/dev/null || \
+  ffmpeg -v error -f lavfi -i "$CUTS_SRC" -c:v mpeg4 -pix_fmt yuv420p -y "$CUTS_VIDEO" 2>/dev/null
+
+# Each kept frame's original index (scene N = cut at N s) must match the
+# timestamp in its filename, and timestamps must strictly increase
+check_cut_timestamps() {
+  local dir="$1" prev=-1 f idx secs
+  for f in "$dir"/vshot_*_frame_*_t*.jpg; do
+    [ -f "$f" ] || return 1
+    idx="${f##*_frame_}"
+    idx=$((10#${idx%%_t*}))
+    secs=$(echo "$f" | sed 's/.*_t\([0-9]*\)m\([0-9.]*\)s\.jpg$/\1 \2/' | awk '{printf "%d", $1 * 60 + $2}')
+    [ "$idx" -eq "$secs" ] || return 1
+    [ "$secs" -gt "$prev" ] || return 1
+    prev=$secs
+  done
+}
+
+CAP_DEFAULT_DIR="${TMPDIR_TEST}/cap_default"
+CAP_ERR=$("$VSHOT" "$CUTS_VIDEO" --scene --output "$CAP_DEFAULT_DIR" 2>&1 >/dev/null)
+assert_count "default cap: 30 frames" "$CAP_DEFAULT_DIR" "vshot_*_frame_*.jpg" 30
+if echo "$CAP_ERR" | grep -q "59 scene changes detected"; then
+  echo "  ✅ cap warning on stderr reports original count"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ cap warning missing: $CAP_ERR"
+  FAIL=$((FAIL + 1))
+fi
+assert "default cap: timestamps aligned and increasing" check_cut_timestamps "$CAP_DEFAULT_DIR"
+
+CAP_DIR="${TMPDIR_TEST}/cap"
+assert "--max-frames 5 + montage" "$VSHOT" "$CUTS_VIDEO" --scene --max-frames 5 --montage --output "$CAP_DIR"
+assert_count "--max-frames 5: 5 frames" "$CAP_DIR" "vshot_*_frame_*.jpg" 5
+assert "--max-frames 5: timestamps aligned and increasing" check_cut_timestamps "$CAP_DIR"
+assert_count "--max-frames 5: montage exists" "$CAP_DIR" "*_montage_*.jpg" 1
+
+# Uneven cuts: dense every second for 1–10 s, then sparse at 30 s and 50 s.
+# Thinning must space by time, not by scene index, so 30 s and 50 s survive.
+UNEVEN_VIDEO="${TMPDIR_TEST}/uneven.mp4"
+UNEVEN_SRC="nullsrc=s=640x360:r=10:d=60,geq=lum='if(mod(if(lt(T,11),floor(T),if(lt(T,30),10,if(lt(T,50),11,12))),2),230,20)':cb=128:cr=128"
+ffmpeg -v error -f lavfi -i "$UNEVEN_SRC" -c:v libx264 -pix_fmt yuv420p -y "$UNEVEN_VIDEO" 2>/dev/null || \
+  ffmpeg -v error -f lavfi -i "$UNEVEN_SRC" -c:v mpeg4 -pix_fmt yuv420p -y "$UNEVEN_VIDEO" 2>/dev/null
+
+# Kept frames' timestamps (whole seconds), space-separated, from filenames
+kept_seconds() {
+  local f
+  for f in "$1"/vshot_*_frame_*_t*.jpg; do
+    [ -f "$f" ] || continue
+    echo "$f" | sed 's/.*_t\([0-9]*\)m\([0-9.]*\)s\.jpg$/\1 \2/' | awk '{printf "%d ", $1 * 60 + $2 + 0.5}'
+  done
+}
+
+UNEVEN_DIR="${TMPDIR_TEST}/uneven"
+UNEVEN_ERR=$("$VSHOT" "$UNEVEN_VIDEO" --scene --max-frames 5 --output "$UNEVEN_DIR" 2>&1 >/dev/null)
+assert_count "uneven cuts --max-frames 5: 5 frames" "$UNEVEN_DIR" "vshot_*_frame_*.jpg" 5
+UNEVEN_KEPT=" $(kept_seconds "$UNEVEN_DIR")"
+if echo "$UNEVEN_ERR" | grep -q "12 scene changes detected" && \
+   echo "$UNEVEN_KEPT" | grep -q " 30 " && echo "$UNEVEN_KEPT" | grep -q " 50 "; then
+  echo "  ✅ uneven cuts: sparse later scenes (30 s, 50 s) kept"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ uneven cuts: kept [${UNEVEN_KEPT}], stderr: $UNEVEN_ERR"
+  FAIL=$((FAIL + 1))
+fi
+
+# Leading-zero cap must be normalized to decimal (no octal, valid JSON)
+OCT_DIR="${TMPDIR_TEST}/cap_octal"
+OCT_OUT=$("$VSHOT" "$CUTS_VIDEO" --scene --max-frames 08 --montage --json --output "$OCT_DIR" 2>/dev/null)
+OCT_RC=$?
+if command -v python3 >/dev/null 2>&1; then
+  OCT_FRAMES=$(echo "$OCT_OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["frames"])' 2>/dev/null)
+else
+  OCT_FRAMES=$(echo "$OCT_OUT" | grep -o '"frames":[0-9]*' | sed 's/"frames"://')
+  echo "$OCT_OUT" | grep -q '"frames":0[0-9]' && OCT_FRAMES="invalid"
+fi
+if [ "$OCT_RC" -eq 0 ] && [ "$OCT_FRAMES" = "8" ]; then
+  echo "  ✅ --max-frames 08 --json: valid JSON with frames 8"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --max-frames 08 --json: rc=$OCT_RC frames='$OCT_FRAMES' out: $OCT_OUT"
+  FAIL=$((FAIL + 1))
+fi
+assert_count "--max-frames 08: 8 frames" "$OCT_DIR" "vshot_*_frame_*.jpg" 8
+
+assert_fail "invalid --max-frames 0 errors" "$VSHOT" "$CUTS_VIDEO" --scene --max-frames 0
+assert_fail "invalid --max-frames abc errors" "$VSHOT" "$CUTS_VIDEO" --scene --max-frames abc
 
 echo ""
 echo "── Cleanup isolation (#7) ──"
@@ -242,6 +402,159 @@ echo "── Montage columns (--cols) ──"
 COLS_DIR="${TMPDIR_TEST}/cols"
 assert "--cols 2 montage" "$VSHOT" "$VIDEO" --montage --cols 2 --frames 3 --output "$COLS_DIR"
 assert_count "cols montage exists" "$COLS_DIR" "*_montage_*.jpg" 1
+
+echo ""
+echo "── Stable montage name (--name) ──"
+NAME_DIR="${TMPDIR_TEST}/name"
+assert "--name montage" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name review --output "$NAME_DIR"
+assert "--name rerun overwrites" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name review --output "$NAME_DIR"
+assert_count "--name: exactly 1 montage after 2 runs" "$NAME_DIR" "*.jpg" 1
+assert_nonempty "--name montage non-empty" "${NAME_DIR}/review.jpg"
+NAME_OUT=$("$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name review --output "$NAME_DIR" 2>&1)
+if echo "$NAME_OUT" | grep -q '📊 Montage: review.jpg ' && \
+   echo "$NAME_OUT" | grep -q "Read(\".*/name/review.jpg\")"; then
+  echo "  ✅ --name: Montage line and Read() hint use the real file"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: output does not reference review.jpg: $NAME_OUT"
+  FAIL=$((FAIL + 1))
+fi
+NAME_JSON=$("$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name review --json --output "$NAME_DIR" 2>/dev/null)
+if echo "$NAME_JSON" | grep -q '"montage":"[^"]*/name/review.jpg"'; then
+  echo "  ✅ --name: --json reports review.jpg"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: --json montage path wrong: $NAME_JSON"
+  FAIL=$((FAIL + 1))
+fi
+NAME_EXT_DIR="${TMPDIR_TEST}/name_ext"
+assert "--name strips .JPEG" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name shot.JPEG --output "$NAME_EXT_DIR"
+assert "--name strips .Jpg" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name clip.Jpg --output "$NAME_EXT_DIR"
+assert_nonempty "--name .JPEG -> shot.jpg" "${NAME_EXT_DIR}/shot.jpg"
+assert_nonempty "--name .Jpg -> clip.jpg" "${NAME_EXT_DIR}/clip.jpg"
+assert_count "--name: no double extension" "$NAME_EXT_DIR" "*.jpg" 2
+# Stale target: a pre-existing file must be replaced, not reported as-is
+NAME_STALE_DIR="${TMPDIR_TEST}/name_stale"
+mkdir -p "$NAME_STALE_DIR"
+echo "stale" > "${NAME_STALE_DIR}/review.jpg"
+assert "--name over stale file" "$VSHOT" "$VIDEO" --montage --frames 2 --name review --output "$NAME_STALE_DIR"
+if ! grep -q "^stale$" "${NAME_STALE_DIR}/review.jpg"; then
+  echo "  ✅ --name: stale target replaced"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: stale target was not replaced"
+  FAIL=$((FAIL + 1))
+fi
+# A montage that exits 0 without writing must not let the stale file pass
+FAKE_BIN="${TMPDIR_TEST}/fake_bin"
+mkdir -p "$FAKE_BIN"
+printf '#!/bin/sh\nexit 0\n' > "${FAKE_BIN}/montage"
+chmod +x "${FAKE_BIN}/montage"
+echo "stale" > "${NAME_STALE_DIR}/review.jpg"
+assert_fail "--name: no-op montage fails instead of reporting stale file" \
+  env PATH="${FAKE_BIN}:${PATH}" "$VSHOT" "$VIDEO" --montage --frames 2 --name review --output "$NAME_STALE_DIR"
+if [ ! -e "${NAME_STALE_DIR}/review.jpg" ]; then
+  echo "  ✅ --name: stale target removed before montage"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: stale target survived a failed run"
+  FAIL=$((FAIL + 1))
+fi
+if [ -z "$(find "$NAME_STALE_DIR" -maxdepth 1 -name '.vshot_montage_*' 2>/dev/null)" ]; then
+  echo "  ✅ --name: no temp montage left after failed run"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: temp montage file left behind"
+  FAIL=$((FAIL + 1))
+fi
+# ImageMagick filename templates (%d, [..]) must be written literally
+NAME_TPL_DIR="${TMPDIR_TEST}/name_tpl"
+assert "--name 'review%03d'" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name 'review%03d' --output "$NAME_TPL_DIR"
+assert_nonempty "--name 'review%03d' -> review%03d.jpg" "${NAME_TPL_DIR}/review%03d.jpg"
+if [ ! -e "${NAME_TPL_DIR}/review000.jpg" ]; then
+  echo "  ✅ --name: no template-expanded review000.jpg"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: ImageMagick expanded the template to review000.jpg"
+  FAIL=$((FAIL + 1))
+fi
+assert "--name 'shot[1]'" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name 'shot[1]' --output "$NAME_TPL_DIR"
+assert_nonempty "--name 'shot[1]' -> shot[1].jpg" "${NAME_TPL_DIR}/shot[1].jpg"
+assert_count "--name templates: exactly 2 montages, no temp leftovers" "$NAME_TPL_DIR" "*.jpg" 2
+assert_fail "--name empty errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name "" --output "${TMPDIR_TEST}/name_bad"
+assert_fail "--name .jpg (empty after strip) errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name .jpg --output "${TMPDIR_TEST}/name_bad"
+assert_fail "--name with / errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name a/b --output "${TMPDIR_TEST}/name_bad"
+assert_fail "--name without --montage errors" "$VSHOT" "$VIDEO" --frames 2 --name review --output "${TMPDIR_TEST}/name_bad"
+assert_fail "--name missing value errors" "$VSHOT" "$VIDEO" --montage --name
+if [ ! -e "${TMPDIR_TEST}/name_bad" ]; then
+  echo "  ✅ --name: invalid names fail before writing output"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: invalid name still created output dir"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "── Montage max edge (--max-edge, #3) ──"
+# 20 frames in detail mode → 5x4 grid of 1280x720 cells (6440 px wide unbounded).
+# --at is not capped to the 3s duration, so it can request 20 frames.
+EDGE_AT="0,0.15,0.3,0.45,0.6,0.75,0.9,1.05,1.2,1.35,1.5,1.65,1.8,1.95,2.1,2.25,2.4,2.55,2.7,2.85"
+montage_long_edge() {
+  local m
+  m=$(find "$1" -maxdepth 1 -name "*_montage_*.jpg" -type f 2>/dev/null | head -1)
+  [ -n "$m" ] || { echo 0; return; }
+  ffprobe -v error -show_entries stream=width,height -of csv=p=0 "$m" \
+    | awk -F, '{print ($1 > $2) ? $1 : $2}'
+}
+EDGE_DIR="${TMPDIR_TEST}/max_edge"
+EDGE_ERR="${TMPDIR_TEST}/max_edge.err"
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --output "$EDGE_DIR" >/dev/null 2>"$EDGE_ERR"
+EDGE=$(montage_long_edge "$EDGE_DIR")
+if [ "$EDGE" -gt 0 ] && [ "$EDGE" -le 2576 ]; then
+  echo "  ✅ default montage long edge <= 2576 (${EDGE}px)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ default montage long edge ${EDGE}px (expected 1-2576)"
+  FAIL=$((FAIL + 1))
+fi
+assert "shrink note on stderr" grep -q "cells shrunk" "$EDGE_ERR"
+NOEDGE_DIR="${TMPDIR_TEST}/max_edge_off"
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 0 --output "$NOEDGE_DIR" >/dev/null 2>&1
+EDGE=$(montage_long_edge "$NOEDGE_DIR")
+if [ "$EDGE" -eq 6440 ]; then
+  echo "  ✅ --max-edge 0 keeps full size (${EDGE}px)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --max-edge 0 long edge ${EDGE}px (expected 6440)"
+  FAIL=$((FAIL + 1))
+fi
+EDGE_JSON=$("$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --json --output "${TMPDIR_TEST}/max_edge_json" 2>/dev/null)
+if echo "$EDGE_JSON" | grep -q '"montage_cell":"[0-9]*x[0-9]*","montage_shrunk":true'; then
+  echo "  ✅ --json reports montage_cell / montage_shrunk"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --json missing montage_cell / montage_shrunk: $EDGE_JSON"
+  FAIL=$((FAIL + 1))
+fi
+# A cap below the smallest padded 5x4 grid must fail instead of overshooting
+TINY_ERR="${TMPDIR_TEST}/max_edge_tiny.err"
+assert_fail "--max-edge 40 (below grid minimum) fails" \
+  "$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 40 --output "${TMPDIR_TEST}/max_edge_tiny"
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 40 --output "${TMPDIR_TEST}/max_edge_tiny2" >/dev/null 2>"$TINY_ERR"
+assert "too-small cap names the minimum" grep -q "too small .*minimum [0-9]" "$TINY_ERR"
+# Leading zeros are decimal, not octal
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 2576 --output "${TMPDIR_TEST}/max_edge_dec" >/dev/null 2>&1
+"$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 02576 --output "${TMPDIR_TEST}/max_edge_oct" >/dev/null 2>&1
+EDGE_DEC=$(montage_long_edge "${TMPDIR_TEST}/max_edge_dec")
+EDGE_OCT=$(montage_long_edge "${TMPDIR_TEST}/max_edge_oct")
+if [ "$EDGE_OCT" -gt 0 ] && [ "$EDGE_OCT" -le 2576 ] && [ "$EDGE_OCT" -eq "$EDGE_DEC" ]; then
+  echo "  ✅ --max-edge 02576 is decimal (${EDGE_OCT}px, same as 2576)"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --max-edge 02576 long edge ${EDGE_OCT}px (2576 gives ${EDGE_DEC}px)"
+  FAIL=$((FAIL + 1))
+fi
+assert "--max-edge 0800 succeeds" \
+  "$VSHOT" "$VIDEO" --at "$EDGE_AT" --mode detail --montage --max-edge 0800 --output "${TMPDIR_TEST}/max_edge_0800"
 
 echo ""
 echo "── JSON output (--json) ──"
@@ -290,6 +603,7 @@ assert_fail "no args errors" "$VSHOT"
 assert_fail "invalid --at errors" "$VSHOT" "$VIDEO" --at abc
 assert_fail "all --at out-of-range errors" "$VSHOT" "$VIDEO" --at 999
 assert_fail "invalid --cols errors" "$VSHOT" "$VIDEO" --montage --cols 0 --frames 2
+assert_fail "invalid --max-edge errors" "$VSHOT" "$VIDEO" --montage --max-edge -1 --frames 2
 
 echo ""
 echo "── Font fallback ──"

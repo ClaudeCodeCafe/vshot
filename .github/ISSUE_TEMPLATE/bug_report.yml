@@ -1,0 +1,64 @@
+name: Bug report
+description: Report an error or unexpected behavior in vshot
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please include the exact command and its full output (stderr included) so we can reproduce it.
+
+  - type: textarea
+    attributes:
+      label: Summary
+      description: A clear and concise description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Command to reproduce
+      description: The exact vshot command you ran, plus anything special about the input video (length, resolution, portrait/landscape, codec).
+      render: shell
+      placeholder: vshot video.mp4 --mode text --montage --json
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Expected vs actual behavior
+      description: What you expected to happen, and what actually happened. Paste error messages here.
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: vshot version
+      description: Output of `vshot --version`
+      placeholder: e.g., vshot v0.3.0
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: ffmpeg / ImageMagick versions
+      description: |
+        Output of `ffmpeg -version | head -1` and `montage --version | head -1`.
+        Also note whether your ffmpeg has the drawtext filter (`ffmpeg -hide_banner -filters | grep drawtext`) — vshot takes a different timestamp path without it.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Platform
+      description: Operating system and architecture (see `uname -orsm`)
+      placeholder: e.g., macOS 15 arm64, Ubuntu 24.04 x86_64
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Screenshots of the montage, `--json` output, or anything else that helps.
+    validations:
+      required: false

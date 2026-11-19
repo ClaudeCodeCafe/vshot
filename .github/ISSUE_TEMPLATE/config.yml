@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: README
+    url: https://github.com/ClaudeCodeCafe/vshot#readme
+    about: Please check the usage and options in the README before opening an issue.
