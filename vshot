@@ -30,6 +30,23 @@ MAX_EDGE=2576
 JSON=false
 CLEANED=false
 
+# Default mode seeks to each time instead of decoding the whole video once
+# when the spacing between frames (duration / frames) is at least this many
+# seconds (#10). A single pass costs decode time proportional to the duration;
+# seeking costs a roughly fixed time per frame (decode from the previous
+# keyframe), so the break-even point is a frame spacing, not a duration.
+# Measured on Apple Silicon, ffmpeg 8.1, 1080p30 H.264 testsrc2 (single pass
+# vs seek, seconds; output 480x270):
+#   20 frames, x264 medium,    GOP 250:  120 s 1.79/2.14  180 s 2.95/2.16  300 s 6.51/2.56
+#   20 frames, x264 medium,    GOP 30:    60 s 1.18/1.25  120 s 2.71/1.24  300 s 6.77/1.26
+#   20 frames, x264 ultrafast, GOP 250:  120 s 1.02/1.48  180 s 1.52/1.34  600 s 5.09/1.38
+#   20 frames, x264 ultrafast, GOP 30:    60 s 0.56/0.80  120 s 1.09/0.91  600 s 6.02/0.88
+#   60 frames, x264 ultrafast, GOP 250:  300 s 4.07/5.10  600 s 7.46/5.19
+#   60 frames, x264 ultrafast, GOP 30:   180 s 2.56/2.61  300 s 3.63/2.59
+# Break-even is ~3-5 s per frame with short GOPs and ~7-8 s with long ones;
+# 8 s keeps seeking from ever being noticeably slower (20 frames: >= 160 s).
+SEEK_MIN_STEP=8
+
 # ── Usage ──────────────────────────────────────────────────────────────────
 usage() {
   cat <<EOF
@@ -358,7 +375,7 @@ fi
 # ── Temp file for capturing stderr (#3) ───────────────────────────────────
 STDERR_TMP=$(mktemp "${TMPDIR:-/tmp}/vshot_stderr.XXXXXX")
 cleanup_tmp() {
-  rm -f -- "$STDERR_TMP" "${SCENE_PTS_LOG:-}" "${MONTAGE_TMP:-}" 2>/dev/null || true
+  rm -f -- "$STDERR_TMP" "${PTS_LOG:-}" "${MONTAGE_TMP:-}" 2>/dev/null || true
 }
 trap cleanup_tmp EXIT
 
@@ -456,22 +473,32 @@ else
 fi
 
 # ── Calculate frame extraction rate ────────────────────────────────────────
+# Two extraction strategies, both reporting the real PTS of each frame:
+# - single pass: decode the whole video once, a select filter picks frames and
+#   showinfo logs their PTS (--scene, --interval, default mode on short videos)
+# - seek: one input-seeking ffmpeg run per time (--at, default mode on long
+#   videos); each returns the first frame at or after the requested time
+# Even spacing (default / --interval) selects the first frame of each STEP-long
+# bucket, i.e. the first frame at or after i * STEP — the same frame a seek to
+# i * STEP returns. (The fps filter used before picked frames up to half a STEP
+# later than the times they were labelled with.)
+bucket_select() {
+  echo "select='isnan(prev_selected_t)+gte(floor(t/$1),floor(prev_selected_t/$1)+1)'"
+}
 SCENE_MODE=false
-SEEK_MODE=$AT_MODE # one input seek per time in AT_ARR (--at and default mode)
+SEEK_MODE=$AT_MODE
 if $AT_MODE; then
   # Pinpoint mode: one ffmpeg seek per requested time (see extraction below)
   FRAMES="${#AT_ARR[@]}"
 elif [ -n "$SCENE" ]; then
   # Scene detection: extract only frames where visual change exceeds threshold
   SCENE_MODE=true
-  # showinfo captures PTS for accurate timestamps on scene-detected frames
-  SCENE_PTS_LOG=$(mktemp "${TMPDIR:-/tmp}/vshot_pts.XXXXXX")
   VF_FILTER="select='gt(scene,${SCENE})',showinfo,scale=${W_OUT}:${H_OUT}"
   FRAMES="?"
 elif [ -n "$INTERVAL" ]; then
-  FPS_FILTER="fps=1/${INTERVAL}"
-  VF_FILTER="${FPS_FILTER},scale=${W_OUT}:${H_OUT}"
-  # Don't estimate — actual count depends on ffmpeg's fps filter timing
+  STEP="$INTERVAL"
+  VF_FILTER="$(bucket_select "$STEP"),showinfo,scale=${W_OUT}:${H_OUT}"
+  # Don't estimate — actual count depends on the frames present
   FRAMES="?"
 else
   # (#12) Warn if FRAMES was capped
@@ -479,14 +506,22 @@ else
     echo "Warning: --frames $FRAMES exceeds video duration (${DURATION_INT}s). Capping to $DURATION_INT." >&2
     FRAMES=$DURATION_INT
   fi
-  # Seek to each of the N evenly spaced times instead of decoding the whole
-  # video with the fps filter (much faster on long videos, #10)
-  SEEK_MODE=true
   STEP=$(echo "$DURATION $FRAMES" | awk '{printf "%.4f", $1 / $2}')
-  AT_ARR=()
-  while read -r t; do
-    AT_ARR+=("$t")
-  done < <(awk -v n="$FRAMES" -v s="$STEP" 'BEGIN{for (i = 0; i < n; i++) printf "%.2f\n", i * s}')
+  # Seeking costs a roughly fixed time per frame; a single pass costs decode
+  # time proportional to the duration. Seek only when it is faster (#10).
+  if awk -v s="$STEP" -v m="$SEEK_MIN_STEP" 'BEGIN{exit !(s >= m)}'; then
+    SEEK_MODE=true
+    AT_ARR=()
+    while read -r t; do
+      AT_ARR+=("$t")
+    done < <(awk -v n="$FRAMES" -v s="$STEP" 'BEGIN{for (i = 0; i < n; i++) printf "%.2f\n", i * s}')
+  else
+    VF_FILTER="$(bucket_select "$STEP"),showinfo,scale=${W_OUT}:${H_OUT}"
+  fi
+fi
+if ! $SEEK_MODE; then
+  # showinfo PTS of each output frame, one per line in output order
+  PTS_LOG=$(mktemp "${TMPDIR:-/tmp}/vshot_pts.XXXXXX")
 fi
 
 # ── Setup output (#10: -- before path operands) ───────────────────────────
@@ -515,6 +550,8 @@ elif $SCENE_MODE; then
   echo "   Scene:    threshold=${SCENE} (auto frame count, max ${MAX_FRAMES})"
 elif [ -n "$INTERVAL" ]; then
   echo "   Interval: every ${INTERVAL}s"
+elif $SEEK_MODE; then
+  echo "   Frames:   $FRAMES (seeking to each time)"
 else
   echo "   Frames:   $FRAMES"
 fi
@@ -524,63 +561,83 @@ echo ""
 echo -n "   Extracting frames..."
 
 # (#3) Capture stderr, check exit code
-# Scene mode needs variable frame rate output and yuvj420p for JPEG compatibility
-EXTRA_OPTS=""
-FFMPEG_LOGLEVEL="error"
-if $SCENE_MODE; then
-  # -fps_mode replaced -vsync (ffmpeg 5.1+); ffmpeg 9 removed -vsync entirely
-  if ffmpeg -hide_banner -h full 2>/dev/null | grep -- '-fps_mode' >/dev/null; then
-    EXTRA_OPTS="-fps_mode vfr -pix_fmt yuvj420p"
-  else
-    EXTRA_OPTS="-vsync vfr -pix_fmt yuvj420p"
-  fi
-  # Use info level to capture showinfo PTS data for accurate timestamps
-  FFMPEG_LOGLEVEL="info"
+# ffmpeg runs at info level so showinfo can log each frame's PTS.
+# -pix_fmt yuvj420p: full-range JPEG input for the mjpeg encoder. It also makes
+# a seek that finds no frame (past the last video frame) a clean exit 0 with no
+# output; otherwise ffmpeg 7+ fails to open the encoder at EOF and exits
+# non-zero, which would be indistinguishable from a real error.
+# Single pass needs variable frame rate output (one image per selected frame).
+# -fps_mode replaced -vsync (ffmpeg 5.1+); ffmpeg 9 removed -vsync entirely
+if ffmpeg -hide_banner -h full 2>/dev/null | grep -- '-fps_mode' >/dev/null; then
+  EXTRA_OPTS="-fps_mode vfr -pix_fmt yuvj420p"
+else
+  EXTRA_OPTS="-vsync vfr -pix_fmt yuvj420p"
 fi
 QV=$(( (100 - Q) * 31 / 100 + 1 ))
 FFMPEG_EXIT=0
 AT_TIMES=()
+# First showinfo pts_time in an ffmpeg log (empty if none)
+first_pts() {
+  sed -n 's/.*Parsed_showinfo.* pts_time:\([-0-9.e+]*\).*/\1/p' "$1" | head -1
+}
 if $SEEK_MODE; then
   : > "$STDERR_TMP"
+  SEEK_LOG=$(mktemp "${TMPDIR:-/tmp}/vshot_seek.XXXXXX")
+  PTS_LOG="$SEEK_LOG" # removed by cleanup_tmp
   n=1
+  PREV_T=""
   for t in "${AT_ARR[@]}"; do
     OUT_FRAME="${OUTPUT_DIR}/${FRAME_PREFIX}_$(printf '%04d' "$n").jpg"
-    if ! ffmpeg -v error -ss "$t" -i "$VIDEO" \
+    rm -f -- "$OUT_FRAME"
+    if ! ffmpeg -v info -hide_banner -nostdin -ss "$t" -i "$VIDEO" \
       -frames:v 1 -update 1 \
-      -vf "scale=${W_OUT}:${H_OUT}" \
-      -q:v "$QV" \
-      "$OUT_FRAME" 2>>"$STDERR_TMP"; then
-      # e.g. seeking past the end of the video stream when the container
-      # (audio) is longer — skip this time instead of aborting the run
+      -vf "showinfo,scale=${W_OUT}:${H_OUT}" \
+      -pix_fmt yuvj420p -q:v "$QV" \
+      "$OUT_FRAME" 2>"$SEEK_LOG"; then
+      # Any ffmpeg failure is fatal, even after earlier frames succeeded
       FFMPEG_EXIT=1
+      echo "   (while extracting the frame at ${t}s)" >> "$STDERR_TMP"
+      cat -- "$SEEK_LOG" >> "$STDERR_TMP"
       rm -f -- "$OUT_FRAME"
+      break
     fi
-    if [ -s "$OUT_FRAME" ]; then
-      # Track which times actually produced a frame (keeps timestamps aligned)
-      AT_TIMES+=("$t")
-      n=$((n + 1))
+    if [ ! -s "$OUT_FRAME" ]; then
+      # ffmpeg succeeded but found no frame at or after t: the time is past the
+      # last video frame (e.g. the container/audio is longer than the video)
+      rm -f -- "$OUT_FRAME"
+      echo "Warning: no video frame at or after ${t}s (past the end of the video stream). Skipping." >&2
+      continue
+    fi
+    # Without -copyts, output PTS are relative to the seek target, so the
+    # returned frame's position is t + pts_time (it can be later than t on
+    # sparse/VFR video)
+    PTS=$(first_pts "$SEEK_LOG")
+    if [ -n "$PTS" ]; then
+      T=$(awk -v t="$t" -v p="$PTS" 'BEGIN{printf "%.2f", t + p}')
     else
-      rm -f -- "$OUT_FRAME"
-      echo "Warning: could not decode a frame at ${t}s. Skipping." >&2
+      T=$(awk -v t="$t" 'BEGIN{printf "%.2f", t}')
     fi
+    if [ "$T" = "$PREV_T" ]; then
+      # Sparse video: this time returned the same frame as the previous one
+      rm -f -- "$OUT_FRAME"
+      echo "Note: ${t}s returns the frame at ${T}s again. Skipping duplicate." >&2
+      continue
+    fi
+    AT_TIMES+=("$T")
+    PREV_T="$T"
+    n=$((n + 1))
   done
-  # Only treat ffmpeg errors as fatal when no time produced a frame
-  if [ "${#AT_TIMES[@]}" -gt 0 ]; then
-    FFMPEG_EXIT=0
-  fi
 else
   # shellcheck disable=SC2086
-  ffmpeg -v "$FFMPEG_LOGLEVEL" -i "$VIDEO" \
+  ffmpeg -v info -hide_banner -nostdin -i "$VIDEO" \
     -vf "${VF_FILTER}" \
     $EXTRA_OPTS \
     -q:v "$QV" \
     "${OUTPUT_DIR}/${FRAME_PREFIX}_%04d.jpg" \
     2>"$STDERR_TMP" || FFMPEG_EXIT=$?
-fi
-
-# Extract PTS values from showinfo output for scene mode timestamps
-if $SCENE_MODE && [ -s "$STDERR_TMP" ]; then
-  grep 'pts_time:' "$STDERR_TMP" | sed 's/.*pts_time:\([0-9.]*\).*/\1/' > "$SCENE_PTS_LOG" 2>/dev/null || true
+  # Extract PTS values from showinfo output (one line per output frame)
+  grep 'Parsed_showinfo.* pts_time:' "$STDERR_TMP" 2>/dev/null \
+    | sed 's/.* pts_time:\([-0-9.e+]*\).*/\1/' > "$PTS_LOG" || true
 fi
 
 # (#4) Use find for frame counting (bash 3 compatible)
@@ -615,7 +672,9 @@ if [ "$FFMPEG_EXIT" -ne 0 ]; then
     echo " FAILED" >&2
     echo "Error: ffmpeg frame extraction failed" >&2
     if [ -s "$STDERR_TMP" ]; then
-      echo "  ffmpeg: $(cat "$STDERR_TMP")" >&2
+      # info-level log: drop per-frame showinfo lines, keep the tail (errors)
+      echo "  ffmpeg:" >&2
+      grep -v 'Parsed_showinfo' "$STDERR_TMP" | tail -n 20 >&2 || true
     fi
     exit 1
   fi
@@ -633,7 +692,7 @@ echo " done (${EXTRACTED} frames)"
 # timestamps aligned.
 if $SCENE_MODE && [ "$EXTRACTED" -gt "$MAX_FRAMES" ]; then
   echo "   ⚠️  ${EXTRACTED} scene changes detected; thinning evenly to --max-frames ${MAX_FRAMES}." >&2
-  PTS_SRC="$SCENE_PTS_LOG"
+  PTS_SRC="$PTS_LOG"
   if [ ! -s "$PTS_SRC" ] || [ "$(awk 'END {print NR}' "$PTS_SRC")" -ne "$EXTRACTED" ]; then
     PTS_SRC=/dev/null
   fi
@@ -660,13 +719,13 @@ if $SCENE_MODE && [ "$EXTRACTED" -gt "$MAX_FRAMES" ]; then
   i=0
   for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
     if echo "$KEEP_LIST" | grep -qx "$i"; then
-      [ -s "$SCENE_PTS_LOG" ] && awk -v n="$((i + 1))" 'NR == n {print; exit}' "$SCENE_PTS_LOG" >> "$PTS_KEPT"
+      [ -s "$PTS_LOG" ] && awk -v n="$((i + 1))" 'NR == n {print; exit}' "$PTS_LOG" >> "$PTS_KEPT"
     else
       rm -f -- "$frame"
     fi
     i=$((i + 1))
   done
-  mv -- "$PTS_KEPT" "$SCENE_PTS_LOG"
+  mv -- "$PTS_KEPT" "$PTS_LOG"
   EXTRACTED="$MAX_FRAMES"
 fi
 
@@ -687,8 +746,13 @@ fi
 # Computed once, shared by filename embedding, burn-in, montage labels, --json.
 FRAME_FILES=()
 FRAME_TIMES=()
+# Single pass: use the showinfo PTS log when it lines up with the extracted
+# frames; otherwise fall back to evenly spaced estimates
+USE_PTS_LOG=false
 if ! $SEEK_MODE; then
-  if [ -n "$INTERVAL" ]; then
+  if [ -s "$PTS_LOG" ] && [ "$(awk 'END {print NR}' "$PTS_LOG")" -eq "$EXTRACTED" ]; then
+    USE_PTS_LOG=true
+  elif [ -n "$INTERVAL" ]; then
     STEP="$INTERVAL"
   else
     STEP=$(echo "$DURATION $EXTRACTED" | awk '{printf "%.4f", $1 / $2}')
@@ -698,9 +762,9 @@ i=0
 for frame in "${OUTPUT_DIR}/${FRAME_PREFIX}"_*.jpg; do
   if $SEEK_MODE; then
     T="${AT_TIMES[$i]}"
-  elif $SCENE_MODE && [ -s "$SCENE_PTS_LOG" ]; then
-    # Read actual PTS from showinfo log (1-indexed line for 0-indexed i)
-    T=$(awk "NR==$((i + 1)){print \$1; exit}" "$SCENE_PTS_LOG")
+  elif $USE_PTS_LOG; then
+    # Actual PTS from the showinfo log (1-indexed line for 0-indexed i)
+    T=$(awk -v n="$((i + 1))" 'NR == n {printf "%.2f", $1; exit}' "$PTS_LOG")
   else
     T=$(echo "$i $STEP" | awk '{printf "%.2f", $1 * $2}')
   fi

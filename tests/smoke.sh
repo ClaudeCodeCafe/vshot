@@ -93,7 +93,7 @@ echo "── Frame extraction ──"
 FRAMES_DIR="${TMPDIR_TEST}/frames"
 assert "extract 3 frames" "$VSHOT" "$VIDEO" --frames 3 --output "$FRAMES_DIR"
 assert_count "exactly 3 frames" "$FRAMES_DIR" "vshot_*_frame_*.jpg" 3
-# Default mode seeks to i * D / N — first frame at t=0, labels unchanged (#10)
+# Default mode picks the first frame at or after i * D / N (#10)
 assert_count "frame 1 at 0s" "$FRAMES_DIR" "vshot_*_frame_0001_t0m00s.jpg" 1
 assert_count "frame 2 at 1s" "$FRAMES_DIR" "vshot_*_frame_0002_t0m01s.jpg" 1
 assert_count "frame 3 at 2s" "$FRAMES_DIR" "vshot_*_frame_0003_t0m02s.jpg" 1
@@ -108,9 +108,133 @@ if ffmpeg -v error -f lavfi -i "color=c=blue:s=320x180:d=2" -f lavfi -i "sine=d=
   assert_count "tail: 2 frames kept" "$TAIL_DIR" "vshot_*_frame_*.jpg" 2
   assert_count "tail: frame 1 at 0s" "$TAIL_DIR" "vshot_*_frame_0001_t0m00s.jpg" 1
   assert_count "tail: frame 2 at 1s" "$TAIL_DIR" "vshot_*_frame_0002_t0m01s.jpg" 1
+  # Seeking past the last video frame: ffmpeg finds no frame → skip with a
+  # warning, keep the others, exit 0
+  TAIL_AT_DIR="${TMPDIR_TEST}/tail_at"
+  if TAIL_AT_ERR=$("$VSHOT" "$TAIL_VIDEO" --at 0.5,1.5,3 --output "$TAIL_AT_DIR" 2>&1 >/dev/null) \
+    && echo "$TAIL_AT_ERR" | grep -q "no video frame at or after 3s"; then
+    echo "  ✅ --at past the video end: skipped with a warning, exit 0"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ --at past the video end: expected exit 0 and a skip warning"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_count "tail --at: 2 frames kept" "$TAIL_AT_DIR" "vshot_*_frame_*.jpg" 2
 else
   echo "  ⚠️  audio-longer video: could not generate test clip, skipping"
 fi
+
+# Long audio tail in default mode: wide frame spacing takes the seek path,
+# times past the 2 s video are skipped
+TAIL_LONG="${TMPDIR_TEST}/tail_long.mp4"
+if ffmpeg -v error -f lavfi -i "color=c=blue:s=160x90:d=2" -f lavfi -i "sine=d=60" \
+  -c:v mpeg4 -c:a aac -y "$TAIL_LONG" 2>/dev/null; then
+  TAIL_LONG_DIR="${TMPDIR_TEST}/tail_long"
+  if TAIL_LONG_OUT=$("$VSHOT" "$TAIL_LONG" --frames 3 --output "$TAIL_LONG_DIR" 2>&1) \
+    && echo "$TAIL_LONG_OUT" | grep -q "seeking to each time"; then
+    echo "  ✅ long audio tail: seek path, exit 0"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ long audio tail: expected the seek path and exit 0"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_count "long tail: 1 frame kept" "$TAIL_LONG_DIR" "vshot_*_frame_0001_t0m00s.jpg" 1
+else
+  echo "  ⚠️  long audio tail: could not generate test clip, skipping"
+fi
+
+echo ""
+echo "── Reported times match frame content (#10) ──"
+# Luma encodes the source time: Y = 16 + 10 * T (limited range), so a
+# full-range JPEG pixel value v maps back to T = v * 219 / 2550.
+IM_CMD=$(command -v magick || command -v convert || true)
+# Check every frame of a --json result: reported time within 0.5 s of the
+# time encoded in the image
+check_content_times() {
+  local json="$1" ok=true path time est
+  [ -n "$IM_CMD" ] || return 0
+  while read -r path time; do
+    est=$("$IM_CMD" "$path" -colorspace gray -format '%[fx:mean*255*219/2550]' info: 2>/dev/null)
+    if ! awk -v a="$est" -v b="$time" 'BEGIN{d = a - b; if (d < 0) d = -d; exit !(a != "" && d < 0.5)}'; then
+      echo "     $path: reported ${time}s, content ${est}s"
+      ok=false
+    fi
+  done < <(echo "$json" | grep -o '"path":"[^"]*","time":[0-9.]*' \
+    | sed 's/"path":"\([^"]*\)","time":\([0-9.]*\)/\1 \2/')
+  $ok
+}
+json_times() {
+  echo "$1" | grep -o '"time":[0-9.]*' | sed 's/"time"://' | tr '\n' ' '
+}
+check_times() {
+  local name="$1" json="$2" expected="$3" got
+  got=$(json_times "$json")
+  if [ "$got" = "$expected" ] && check_content_times "$json"; then
+    echo "  ✅ $name: ${got}"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ $name: expected '${expected}', got '${got}'"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# Dense 20 s ramp: even spacing must not drift (the old fps filter picked
+# frames ~half a step later than their labels)
+RAMP="${TMPDIR_TEST}/ramp.mp4"
+ffmpeg -v error -f lavfi -i "nullsrc=s=160x90:r=25:d=20,geq=lum='16+10*T':cb=128:cr=128" \
+  -c:v mpeg4 -q:v 2 -y "$RAMP" 2>/dev/null
+RAMP_JSON=$("$VSHOT" "$RAMP" --frames 4 --no-timestamps --json --output "${TMPDIR_TEST}/ramp" 2>/dev/null)
+check_times "single pass: first frame at or after i*D/N" "$RAMP_JSON" "0.00 5.00 10.00 15.00 "
+RAMP_INT_JSON=$("$VSHOT" "$RAMP" --interval 6 --no-timestamps --json --output "${TMPDIR_TEST}/ramp_int" 2>/dev/null)
+check_times "--interval: first frame at or after i*N" "$RAMP_INT_JSON" "0.00 6.00 12.00 18.00 "
+
+# Sparse VFR: frames only at 0, 5, 10, 15, 20 s. Requested times that fall
+# between frames must report the frame actually returned.
+SPARSE="${TMPDIR_TEST}/sparse.mp4"
+ffmpeg -v error -f lavfi -i "nullsrc=s=160x90:r=1:d=21,geq=lum='16+10*T':cb=128:cr=128" \
+  -vf "select='not(mod(n,5))'" -fps_mode vfr -c:v mpeg4 -q:v 2 -y "$SPARSE" 2>/dev/null
+SPARSE_JSON=$("$VSHOT" "$SPARSE" --frames 10 --no-timestamps --json --output "${TMPDIR_TEST}/sparse" 2>/dev/null)
+check_times "sparse, single pass" "$SPARSE_JSON" "0.00 5.00 10.00 15.00 20.00 "
+SPARSE_SEEK_JSON=$("$VSHOT" "$SPARSE" --frames 2 --no-timestamps --json --output "${TMPDIR_TEST}/sparse_seek" 2>/dev/null)
+check_times "sparse, seek path (default mode)" "$SPARSE_SEEK_JSON" "0.00 15.00 "
+SPARSE_AT_JSON=$("$VSHOT" "$SPARSE" --at 2.1,7,8 --no-timestamps --json --output "${TMPDIR_TEST}/sparse_at" 2>/dev/null)
+check_times "sparse --at 2.1,7,8 (duplicate dropped)" "$SPARSE_AT_JSON" "5.00 10.00 "
+assert_count "sparse --at: filename has the real time" "${TMPDIR_TEST}/sparse_at" "vshot_*_frame_0001_t0m05s.jpg" 1
+
+echo ""
+echo "── ffmpeg errors stay fatal (#10) ──"
+# ffmpeg shim: the 2nd seek fails with a genuine error after the 1st succeeded
+FF_SHIM_DIR="${TMPDIR_TEST}/ff_shim"
+mkdir -p "$FF_SHIM_DIR"
+REAL_FFMPEG=$(command -v ffmpeg)
+cat > "${FF_SHIM_DIR}/ffmpeg" <<SHIM
+#!/bin/bash
+case " \$* " in
+  *" -ss "*)
+    n=\$(( \$(cat "${FF_SHIM_DIR}/count" 2>/dev/null || echo 0) + 1 ))
+    echo "\$n" > "${FF_SHIM_DIR}/count"
+    if [ "\$n" -eq 2 ]; then
+      echo "simulated ffmpeg failure" >&2
+      exit 1
+    fi ;;
+esac
+exec "$REAL_FFMPEG" "\$@"
+SHIM
+chmod +x "${FF_SHIM_DIR}/ffmpeg"
+for args in "--at 0.5,1.5,2.5" "--frames 2"; do
+  rm -f "${FF_SHIM_DIR}/count"
+  # shellcheck disable=SC2086
+  if FF_ERR=$(PATH="${FF_SHIM_DIR}:$PATH" "$VSHOT" "$SPARSE" $args --output "${TMPDIR_TEST}/ff_fail" 2>&1 >/dev/null); then
+    echo "  ❌ $args: error after a successful frame must fail (got exit 0)"
+    FAIL=$((FAIL + 1))
+  elif echo "$FF_ERR" | grep -q "simulated ffmpeg failure"; then
+    echo "  ✅ $args: error after a successful frame is fatal and printed"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ $args: ffmpeg diagnostic not printed"
+    FAIL=$((FAIL + 1))
+  fi
+done
 
 echo ""
 echo "── Montage ──"
@@ -577,8 +701,9 @@ else
   FAIL=$((FAIL + 1))
 fi
 JSON_TIMES=$(echo "$JSON_OUT" | grep -o '"time":[0-9.]*' | tr '\n' ' ')
-if [ "$JSON_TIMES" = '"time":0.00 "time":1.50 ' ]; then
-  echo "  ✅ --json times match even spacing (0.00, 1.50)"
+# 25 fps: the first frame at or after 1.5 s is at 1.52 s (real frame time)
+if [ "$JSON_TIMES" = '"time":0.00 "time":1.52 ' ]; then
+  echo "  ✅ --json times are the real frame times (0.00, 1.52)"
   PASS=$((PASS + 1))
 else
   echo "  ❌ --json times unexpected: $JSON_TIMES"
