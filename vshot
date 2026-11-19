@@ -454,7 +454,7 @@ EXTRA_OPTS=""
 FFMPEG_LOGLEVEL="error"
 if $SCENE_MODE; then
   # -fps_mode replaced -vsync (ffmpeg 5.1+); ffmpeg 9 removed -vsync entirely
-  if ffmpeg -hide_banner -h full 2>/dev/null | grep -q -- '-fps_mode'; then
+  if ffmpeg -hide_banner -h full 2>/dev/null | grep -- '-fps_mode' >/dev/null; then
     EXTRA_OPTS="-fps_mode vfr -pix_fmt yuvj420p"
   else
     EXTRA_OPTS="-vsync vfr -pix_fmt yuvj420p"
