@@ -330,6 +330,96 @@ assert "--cols 2 montage" "$VSHOT" "$VIDEO" --montage --cols 2 --frames 3 --outp
 assert_count "cols montage exists" "$COLS_DIR" "*_montage_*.jpg" 1
 
 echo ""
+echo "── Stable montage name (--name) ──"
+NAME_DIR="${TMPDIR_TEST}/name"
+assert "--name montage" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name review --output "$NAME_DIR"
+assert "--name rerun overwrites" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name review --output "$NAME_DIR"
+assert_count "--name: exactly 1 montage after 2 runs" "$NAME_DIR" "*.jpg" 1
+assert_nonempty "--name montage non-empty" "${NAME_DIR}/review.jpg"
+NAME_OUT=$("$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name review --output "$NAME_DIR" 2>&1)
+if echo "$NAME_OUT" | grep -q '📊 Montage: review.jpg ' && \
+   echo "$NAME_OUT" | grep -q "Read(\".*/name/review.jpg\")"; then
+  echo "  ✅ --name: Montage line and Read() hint use the real file"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: output does not reference review.jpg: $NAME_OUT"
+  FAIL=$((FAIL + 1))
+fi
+NAME_JSON=$("$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name review --json --output "$NAME_DIR" 2>/dev/null)
+if echo "$NAME_JSON" | grep -q '"montage":"[^"]*/name/review.jpg"'; then
+  echo "  ✅ --name: --json reports review.jpg"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: --json montage path wrong: $NAME_JSON"
+  FAIL=$((FAIL + 1))
+fi
+NAME_EXT_DIR="${TMPDIR_TEST}/name_ext"
+assert "--name strips .JPEG" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name shot.JPEG --output "$NAME_EXT_DIR"
+assert "--name strips .Jpg" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name clip.Jpg --output "$NAME_EXT_DIR"
+assert_nonempty "--name .JPEG -> shot.jpg" "${NAME_EXT_DIR}/shot.jpg"
+assert_nonempty "--name .Jpg -> clip.jpg" "${NAME_EXT_DIR}/clip.jpg"
+assert_count "--name: no double extension" "$NAME_EXT_DIR" "*.jpg" 2
+# Stale target: a pre-existing file must be replaced, not reported as-is
+NAME_STALE_DIR="${TMPDIR_TEST}/name_stale"
+mkdir -p "$NAME_STALE_DIR"
+echo "stale" > "${NAME_STALE_DIR}/review.jpg"
+assert "--name over stale file" "$VSHOT" "$VIDEO" --montage --frames 2 --name review --output "$NAME_STALE_DIR"
+if ! grep -q "^stale$" "${NAME_STALE_DIR}/review.jpg"; then
+  echo "  ✅ --name: stale target replaced"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: stale target was not replaced"
+  FAIL=$((FAIL + 1))
+fi
+# A montage that exits 0 without writing must not let the stale file pass
+FAKE_BIN="${TMPDIR_TEST}/fake_bin"
+mkdir -p "$FAKE_BIN"
+printf '#!/bin/sh\nexit 0\n' > "${FAKE_BIN}/montage"
+chmod +x "${FAKE_BIN}/montage"
+echo "stale" > "${NAME_STALE_DIR}/review.jpg"
+assert_fail "--name: no-op montage fails instead of reporting stale file" \
+  env PATH="${FAKE_BIN}:${PATH}" "$VSHOT" "$VIDEO" --montage --frames 2 --name review --output "$NAME_STALE_DIR"
+if [ ! -e "${NAME_STALE_DIR}/review.jpg" ]; then
+  echo "  ✅ --name: stale target removed before montage"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: stale target survived a failed run"
+  FAIL=$((FAIL + 1))
+fi
+if [ -z "$(find "$NAME_STALE_DIR" -maxdepth 1 -name '.vshot_montage_*' 2>/dev/null)" ]; then
+  echo "  ✅ --name: no temp montage left after failed run"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: temp montage file left behind"
+  FAIL=$((FAIL + 1))
+fi
+# ImageMagick filename templates (%d, [..]) must be written literally
+NAME_TPL_DIR="${TMPDIR_TEST}/name_tpl"
+assert "--name 'review%03d'" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name 'review%03d' --output "$NAME_TPL_DIR"
+assert_nonempty "--name 'review%03d' -> review%03d.jpg" "${NAME_TPL_DIR}/review%03d.jpg"
+if [ ! -e "${NAME_TPL_DIR}/review000.jpg" ]; then
+  echo "  ✅ --name: no template-expanded review000.jpg"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: ImageMagick expanded the template to review000.jpg"
+  FAIL=$((FAIL + 1))
+fi
+assert "--name 'shot[1]'" "$VSHOT" "$VIDEO" --montage --cleanup --frames 2 --name 'shot[1]' --output "$NAME_TPL_DIR"
+assert_nonempty "--name 'shot[1]' -> shot[1].jpg" "${NAME_TPL_DIR}/shot[1].jpg"
+assert_count "--name templates: exactly 2 montages, no temp leftovers" "$NAME_TPL_DIR" "*.jpg" 2
+assert_fail "--name empty errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name "" --output "${TMPDIR_TEST}/name_bad"
+assert_fail "--name .jpg (empty after strip) errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name .jpg --output "${TMPDIR_TEST}/name_bad"
+assert_fail "--name with / errors" "$VSHOT" "$VIDEO" --montage --frames 2 --name a/b --output "${TMPDIR_TEST}/name_bad"
+assert_fail "--name without --montage errors" "$VSHOT" "$VIDEO" --frames 2 --name review --output "${TMPDIR_TEST}/name_bad"
+assert_fail "--name missing value errors" "$VSHOT" "$VIDEO" --montage --name
+if [ ! -e "${TMPDIR_TEST}/name_bad" ]; then
+  echo "  ✅ --name: invalid names fail before writing output"
+  PASS=$((PASS + 1))
+else
+  echo "  ❌ --name: invalid name still created output dir"
+  FAIL=$((FAIL + 1))
+fi
+
 echo "── Montage max edge (--max-edge, #3) ──"
 # 20 frames in detail mode → 5x4 grid of 1280x720 cells (6440 px wide unbounded).
 # --at is not capped to the 3s duration, so it can request 20 frames.

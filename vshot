@@ -24,6 +24,8 @@ SCENE=""
 MAX_FRAMES=30
 AT=""
 COLS_OPT=""
+NAME=""
+NAME_SET=false
 MAX_EDGE=2576
 JSON=false
 CLEANED=false
@@ -49,6 +51,8 @@ OPTIONS:
   --mode MODE       overview | text | detail (default: overview)
   --montage         Combine all frames into a single grid image
   --cols N          Number of montage grid columns (default: auto from aspect ratio)
+  --name NAME       Write the montage as <output>/NAME.jpg, overwriting any existing
+                    file (requires --montage; a trailing .jpg/.jpeg is stripped)
   --max-edge N      Shrink montage cells so the montage long edge fits N px
                     (default: 2576, Claude's image limit; 0 disables)
   --output DIR      Output directory (default: <video>_vshot/)
@@ -74,6 +78,7 @@ EXAMPLES:
   ${SCRIPT_NAME} video.mp4 --scene --max-frames 24 --montage # cap scene frames
   ${SCRIPT_NAME} video.mp4 --at 3.5,12,48 --montage  # pinpoint extraction
   ${SCRIPT_NAME} video.mp4 --montage --json          # machine-readable result
+  ${SCRIPT_NAME} video.mp4 --montage --name review   # stable name: review.jpg
 EOF
   exit 0
 }
@@ -234,6 +239,11 @@ while [ $# -gt 0 ]; do
         echo "Error: --cols requires a value" >&2; exit 1
       fi
       COLS_OPT="$2"; shift 2 ;;
+    --name)
+      if [ $# -lt 2 ]; then
+        echo "Error: --name requires a value" >&2; exit 1
+      fi
+      NAME="$2"; NAME_SET=true; shift 2 ;;
     --max-edge)
       if [ $# -lt 2 ]; then
         echo "Error: --max-edge requires a value" >&2; exit 1
@@ -290,6 +300,24 @@ if [ -n "$COLS_OPT" ] && ! is_positive_integer "$COLS_OPT"; then
   exit 1
 fi
 
+if $NAME_SET; then
+  if ! $MONTAGE; then
+    echo "Error: --name only applies to the montage; add --montage" >&2
+    exit 1
+  fi
+  case "$NAME" in
+    */*) echo "Error: --name must be a file name without '/', got '$NAME'" >&2; exit 1 ;;
+  esac
+  # Strip a trailing .jpg/.jpeg (any case); vshot always appends .jpg
+  case "$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]')" in
+    *.jpg) NAME="${NAME%????}" ;;
+    *.jpeg) NAME="${NAME%?????}" ;;
+  esac
+  if [ -z "$NAME" ]; then
+    echo "Error: --name must not be empty (or only an extension)" >&2
+    exit 1
+  fi
+fi
 case "$MAX_EDGE" in
   ''|*[!0-9]*)
     echo "Error: --max-edge must be a non-negative integer, got '$MAX_EDGE'" >&2
@@ -329,7 +357,7 @@ fi
 # ── Temp file for capturing stderr (#3) ───────────────────────────────────
 STDERR_TMP=$(mktemp "${TMPDIR:-/tmp}/vshot_stderr.XXXXXX")
 cleanup_tmp() {
-  rm -f -- "$STDERR_TMP" "${SCENE_PTS_LOG:-}" 2>/dev/null || true
+  rm -f -- "$STDERR_TMP" "${SCENE_PTS_LOG:-}" "${MONTAGE_TMP:-}" 2>/dev/null || true
 }
 trap cleanup_tmp EXIT
 
@@ -764,7 +792,16 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   ROWS=$(( (EXTRACTED + COLS - 1) / COLS ))
 
   TILE="${COLS}x${ROWS}"
-  MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
+  if $NAME_SET; then
+    MONTAGE_FILE="${OUTPUT_DIR}/${NAME}.jpg"
+  else
+    MONTAGE_FILE="${OUTPUT_DIR}/${BASENAME}_montage_${RUN_ID}.jpg"
+  fi
+  # ImageMagick expands %d / [..] in output filenames, so render to a temp
+  # name we control (RUN_ID is digits and "_") and rename to the literal path.
+  MONTAGE_TMP="${OUTPUT_DIR}/.vshot_montage_${RUN_ID}.tmp.jpg"
+  # Remove any previous file so a stale montage can't pass as this run's result
+  rm -f -- "$MONTAGE_FILE" "$MONTAGE_TMP"
 
   # Use shared font detection for montage
   detect_font
@@ -846,13 +883,13 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
 
   MONTAGE_OK=false
   LABELS_DROPPED=false
-  if run_montage "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+  if run_montage "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_TMP" 2>"$STDERR_TMP"; then
     MONTAGE_OK=true
   elif [ -z "$DETECTED_FONT" ]; then
     # First attempt failed without a font — try forcing font detection and retry
     detect_font
     if [ -n "$DETECTED_FONT" ] && [ -f "$DETECTED_FONT" ]; then
-      if montage -font "$DETECTED_FONT" "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+      if montage -font "$DETECTED_FONT" "${MONTAGE_INPUTS[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_TMP" 2>"$STDERR_TMP"; then
         MONTAGE_OK=true
       fi
     fi
@@ -860,7 +897,7 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   if ! $MONTAGE_OK && $USE_LABELS; then
     # Labels also need a working font — last resort: montage without labels
     # (frame→time mapping is still preserved in the filenames)
-    if run_montage "${FRAME_FILES[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_FILE" 2>"$STDERR_TMP"; then
+    if run_montage "${FRAME_FILES[@]}" "${MONTAGE_OPTS[@]}" "$MONTAGE_TMP" 2>"$STDERR_TMP"; then
       MONTAGE_OK=true
       LABELS_DROPPED=true
     fi
@@ -876,9 +913,14 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
   fi
 
   # Verify output file exists and is non-empty (#5)
-  if [ ! -s "$MONTAGE_FILE" ]; then
+  if [ ! -s "$MONTAGE_TMP" ]; then
     echo " FAILED" >&2
     echo "Error: montage file was not created or is empty" >&2
+    exit 1
+  fi
+  if ! mv -f -- "$MONTAGE_TMP" "$MONTAGE_FILE"; then
+    echo " FAILED" >&2
+    echo "Error: could not move montage to ${MONTAGE_FILE}" >&2
     exit 1
   fi
 
@@ -892,7 +934,7 @@ if $MONTAGE && [ "$EXTRACTED" -gt 0 ]; then
     echo "      For larger cells use fewer frames (--frames / --at) or --max-edge 0 (frames on disk keep full resolution)." >&2
   fi
   echo ""
-  echo "   📊 Montage: ${BASENAME}_montage_${RUN_ID}.jpg (${TILE} grid, ${MONTAGE_SIZE})"
+  echo "   📊 Montage: $(basename -- "$MONTAGE_FILE") (${TILE} grid, ${MONTAGE_SIZE})"
 
   # (#6) Only delete this run's prefixed frames
   if $CLEANUP; then
@@ -908,8 +950,8 @@ fi
 TOTAL_SIZE=$(du -sh "$OUTPUT_DIR" | cut -f1 | tr -d ' ')
 echo "   📁 Total: ${TOTAL_SIZE} → ${OUTPUT_DIR}/"
 
-if $MONTAGE; then
-  MONTAGE_PATH="$(cd -- "$OUTPUT_DIR" && pwd)/${BASENAME}_montage_${RUN_ID}.jpg"
+if $MONTAGE && [ -n "${MONTAGE_FILE:-}" ]; then
+  MONTAGE_PATH="$(cd -- "$OUTPUT_DIR" && pwd)/$(basename -- "$MONTAGE_FILE")"
   echo ""
   echo "   💡 Feed to AI:"
   echo "   Read(\"${MONTAGE_PATH}\")"
