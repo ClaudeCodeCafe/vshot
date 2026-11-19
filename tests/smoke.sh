@@ -207,6 +207,13 @@ ffmpeg -v error -f lavfi -i "nullsrc=s=160x90:r=3/25:d=25,geq=lum='16+10*T':cb=1
   -c:v mpeg4 -q:v 2 -y "$GRID" 2>/dev/null
 GRID_JSON=$("$VSHOT" "$GRID" --frames 3 --no-timestamps --json --output "${TMPDIR_TEST}/grid" 2>/dev/null)
 check_times "seek targets on a 25/3 s frame grid" "$GRID_JSON" "0.00 8.33 16.67 "
+# Coarse stream timebase (AVI, 1/25): the seek offset is rounded to the
+# timebase, so times must come from the source PTS, not target + offset
+AVI="${TMPDIR_TEST}/coarse.avi"
+ffmpeg -v error -f lavfi -i "nullsrc=s=160x90:r=25:d=4,geq=lum='16+10*T':cb=128:cr=128" \
+  -c:v mpeg4 -q:v 2 -y "$AVI" 2>/dev/null
+AVI_JSON=$("$VSHOT" "$AVI" --at 0.4999,0.5001 --no-timestamps --json --output "${TMPDIR_TEST}/avi" 2>/dev/null)
+check_times "AVI --at 0.4999,0.5001: distinct frames, source times" "$AVI_JSON" "0.48 0.52 "
 # 240 fps: distinct frames 4 ms apart share the rounded time 0.01 — both kept
 HFR="${TMPDIR_TEST}/hfr.mp4"
 ffmpeg -v error -f lavfi -i "color=c=blue:s=160x90:r=240:d=1" -c:v mpeg4 -y "$HFR" 2>/dev/null

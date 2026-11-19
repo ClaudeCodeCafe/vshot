@@ -578,23 +578,28 @@ fi
 QV=$(( (100 - Q) * 31 / 100 + 1 ))
 FFMPEG_EXIT=0
 AT_TIMES=()
-# First showinfo pts_time in an ffmpeg log (empty if none)
+# First showinfo frame in an ffmpeg log as "pts pts_time" (empty if none)
 first_pts() {
-  sed -n 's/.*Parsed_showinfo.* pts_time:\([-0-9.e+]*\).*/\1/p' "$1" | head -1
+  sed -n 's/.*Parsed_showinfo.* pts: *\([-0-9]*\) *pts_time:\([-0-9.e+]*\).*/\1 \2/p' "$1" | head -1
 }
 if $SEEK_MODE; then
   : > "$STDERR_TMP"
   SEEK_LOG=$(mktemp "${TMPDIR:-/tmp}/vshot_seek.XXXXXX")
   PTS_LOG="$SEEK_LOG" # removed by cleanup_tmp
   n=1
-  PREV_T=""
+  PREV_PTS=""
   for t in "${AT_ARR[@]}"; do
     # Requested time for messages: --at as given, computed targets rounded
     t_req="$t"
     $AT_MODE || t_req=$(awk -v t="$t" 'BEGIN{printf "%.2f", t}')
     OUT_FRAME="${OUTPUT_DIR}/${FRAME_PREFIX}_$(printf '%04d' "$n").jpg"
     rm -f -- "$OUT_FRAME"
-    if ! ffmpeg -v info -hide_banner -nostdin -ss "$t" -i "$VIDEO" \
+    # -copyts -start_at_zero: showinfo reports the source PTS of the returned
+    # frame on the same clock as the single pass (file start = 0). Without it
+    # PTS are rebased to the seek target with an offset rounded to the stream
+    # timebase, so t + pts_time can be off (e.g. AVI at 25 fps).
+    if ! ffmpeg -v info -hide_banner -nostdin -copyts -start_at_zero \
+      -ss "$t" -i "$VIDEO" \
       -frames:v 1 -update 1 \
       -vf "showinfo,scale=${W_OUT}:${H_OUT}" \
       -pix_fmt yuvj420p -q:v "$QV" \
@@ -613,24 +618,24 @@ if $SEEK_MODE; then
       echo "Warning: no video frame at or after ${t_req}s (past the end of the video stream). Skipping." >&2
       continue
     fi
-    # Without -copyts, output PTS are relative to the seek target, so the
-    # returned frame's position is t + pts_time (it can be later than t on
-    # sparse/VFR video)
-    PTS=$(first_pts "$SEEK_LOG")
-    [ -z "$PTS" ] && PTS=0
-    T_EXACT=$(awk -v t="$t" -v p="$PTS" 'BEGIN{printf "%.6f", t + p}')
-    T=$(awk -v t="$T_EXACT" 'BEGIN{printf "%.2f", t}')
+    # The returned frame's time (it can differ from t on sparse/VFR video)
+    PTS_PAIR=$(first_pts "$SEEK_LOG")
+    FRAME_PTS="${PTS_PAIR%% *}"
+    if [ -n "$PTS_PAIR" ]; then
+      T=$(awk -v p="${PTS_PAIR#* }" 'BEGIN{printf "%.2f", p}')
+    else
+      T=$(awk -v t="$t" 'BEGIN{printf "%.2f", t}')
+    fi
     # Sparse video: this time returned the same frame as the previous one.
-    # Compare unrounded times: distinct high-frame-rate frames can share the
-    # 2-decimal display value.
-    if [ -n "$PREV_T" ] && awk -v a="$T_EXACT" -v b="$PREV_T" \
-      'BEGIN{d = a - b; if (d < 0) d = -d; exit !(d < 0.0005)}'; then
+    # Compare the integer source PTS (exact frame identity): distinct frames
+    # can share a rounded time.
+    if [ -n "$FRAME_PTS" ] && [ "$FRAME_PTS" = "$PREV_PTS" ]; then
       rm -f -- "$OUT_FRAME"
       echo "Note: ${t_req}s returns the frame at ${T}s again. Skipping duplicate." >&2
       continue
     fi
     AT_TIMES+=("$T")
-    PREV_T="$T_EXACT"
+    PREV_PTS="$FRAME_PTS"
     n=$((n + 1))
   done
 else
